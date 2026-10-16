@@ -1,0 +1,62 @@
+name: macOS Wine .NET experiments
+# Tries several ways to install .NET Framework 4.8 with Wine on macOS and
+# checks that Mission Planner starts. Used to choose the method in MacWine/launcher.sh.
+
+on:
+  push:
+    paths:
+      - '.github/workflows/mac-wine-exp.yml'
+      - 'MacWine/exp/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  exp:
+    name: Variant ${{ matrix.variant }}
+    runs-on: macos-15
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: A
+            wine: https://github.com/Gcenx/macOS_Wine_builds/releases/download/11.0_1/wine-stable-11.0_1-osx64.tar.xz
+          - variant: B
+            wine: https://github.com/Gcenx/macOS_Wine_builds/releases/download/11.0_1/wine-stable-11.0_1-osx64.tar.xz
+          - variant: C
+            wine: https://github.com/Gcenx/macOS_Wine_builds/releases/download/11.0_1/wine-stable-11.0_1-osx64.tar.xz
+          - variant: D
+            wine: https://github.com/Gcenx/macOS_Wine_builds/releases/download/11.18/wine-devel-11.18-osx64.tar.xz
+          - variant: E
+            wine: https://github.com/Gcenx/macOS_Wine_builds/releases/download/11.0_1/wine-stable-11.0_1-osx64.tar.xz
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          sparse-checkout: MacWine
+
+      - name: Prepare
+        run: |
+          arch -x86_64 /usr/bin/true 2>/dev/null || sudo softwareupdate --install-rosetta --agree-to-license
+          mkdir -p wine && curl -fsSL "${{ matrix.wine }}" | tar -xJ -C wine
+          curl -fsSL -o winetricks https://raw.githubusercontent.com/Winetricks/winetricks/20260125/src/winetricks
+          echo "431f82fc74000e6c864409f1d8fb495d696c03928808e3e8acffc45179312a7b  winetricks" | shasum -a 256 -c -
+          curl -fsSL -o ~/mp.zip https://firmware.ardupilot.org/Tools/MissionPlanner/MissionPlanner-latest.zip
+          ls wine
+
+      - name: Run variant
+        env:
+          DEVELOPER_DIR: /var/empty
+        run: |
+          WR="$(find "$PWD/wine" -maxdepth 4 -type d -path '*Contents/Resources/wine' | head -1)"
+          bash MacWine/exp/dotnet-exp.sh "${{ matrix.variant }}" "$WR" "$PWD/winetricks" "$PWD/out"
+          cat out/run.log
+          grep -q PASS out/result.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: exp-${{ matrix.variant }}
+          path: out
