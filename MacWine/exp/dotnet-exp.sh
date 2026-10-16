@@ -1,8 +1,13 @@
 #!/bin/bash
-# CI experiment: ways to install .NET Framework 4.8 into a Wine prefix on macOS.
+# CI experiment: ways to install .NET Framework 4.8 with Wine on macOS.
 # Usage: dotnet-exp.sh VARIANT WINE_ROOT WINETRICKS OUTDIR
-# VARIANT: A (winetricks dotnet48), B (direct ndp48, no dotnet40),
-#          C (winetricks, Direct3D renderer gdi), E (direct ndp48 + gdi)
+# All variants run `winetricks -q dotnet48`. Differences:
+#   A  as is (diagnostics only: process list every 30 s)
+#   F  winedbg.exe disabled + ShowCrashDialog=0 (crashing sub-installer exits)
+#   G  F + watchdog that kills a winedbg that stays more than 30 s
+#   H  watchdog only
+#   D  same as G (run with a different Wine build)
+# WineHQ bug 57998: on macOS the dotnet40 step hangs in `winedbg --auto`.
 set -u
 VARIANT="$1" WINE_ROOT="$2" WINETRICKS="$3" OUT="$4"
 mkdir -p "$OUT"
@@ -15,66 +20,66 @@ printf '#!/bin/sh\necho x86_64\n' > "$SHIM/lipo"; chmod 755 "$SHIM/lipo"
 LOG="$OUT/run.log"
 t() { echo "$(date +%H:%M:%S) $*" | tee -a "$LOG"; }
 
-# Run a command with a time limit; on timeout capture diagnostics.
-limit() {
-    secs="$1"; shift
-    "$@" >> "$OUT/wine.log" 2>&1 &
-    pid=$!
-    for _ in $(seq 1 "$secs"); do
-        kill -0 "$pid" 2>/dev/null || { wait "$pid"; return $?; }
-        sleep 1
+case "$VARIANT" in G|H|D) WATCHDOG=1 ;; *) WATCHDOG=0 ;; esac
+case "$VARIANT" in F|G|D) NODBG=1 ;; *) NODBG=0 ;; esac
+
+# Background: process list every 30 s; with WATCHDOG, kill winedbg seen twice.
+monitor() {
+    seen=""
+    while :; do
+        sleep 30
+        { echo "=== $(date +%H:%M:%S)"; ps -axo pid,ppid,etime,%cpu,command | grep -iE 'wine|\.exe' | grep -v grep; } >> "$OUT/ps.log"
+        dbg="$(pgrep -f 'winedbg' | tr '\n' ' ')"
+        if [ -n "$dbg" ]; then
+            if [ "$WATCHDOG" = 1 ] && [ "$dbg" = "$seen" ]; then
+                t "watchdog: killing winedbg ($dbg)"
+                pkill -f winedbg
+                seen=""
+                continue
+            fi
+            t "winedbg running: $dbg"
+        fi
+        seen="$dbg"
     done
-    t "TIMEOUT after $secs s: $*"
-    ps -axo pid,ppid,etime,%cpu,command | grep -iE 'wine|\.exe' | grep -v grep > "$OUT/ps-at-timeout.txt"
-    screencapture -x "$OUT/timeout.png" 2>/dev/null
-    "$WINE" winedbg --command "info process" > "$OUT/winedbg-proc.txt" 2>&1 &
-    sleep 20
-    "$WINESERVER" -k 2>/dev/null
-    kill "$pid" 2>/dev/null
-    return 124
-}
-
-set_gdi() {
-    "$WINE" reg add 'HKCU\Software\Wine\Direct3D' /v renderer /t REG_SZ /d gdi /f >> "$OUT/wine.log" 2>&1
-}
-
-direct_ndp48() {
-    f="$W_CACHE/dotnet48/ndp48-x86-x64-allos-enu.exe"
-    if [ ! -f "$f" ]; then
-        mkdir -p "$W_CACHE/dotnet48"
-        curl -fsSL -o "$f" https://download.visualstudio.microsoft.com/download/pr/7afca223-55d2-470a-8edc-6a1739ae3252/abd170b4b0ec15ad0222a809b761a036/ndp48-x86-x64-allos-enu.exe
-    fi
-    echo "95889d6de3f2070c07790ad6cf2000d33d9a1bdfc6a381725ab82ab1c314fd53  $f" | shasum -a 256 -c - >> "$LOG" || return 1
-    "$WINE" winecfg -v win7 >> "$OUT/wine.log" 2>&1
-    WINEDLLOVERRIDES=fusion=b limit 1500 "$WINE" "$f" /q /norestart
-    rc=$?
-    "$WINE" reg add 'HKCU\Software\Wine\DllOverrides' /v '*mscoree' /t REG_SZ /d native /f >> "$OUT/wine.log" 2>&1
-    "$WINE" reg add 'HKCU\Software\Wine\DllOverrides' /v mscoree /t REG_SZ /d native /f >> "$OUT/wine.log" 2>&1
-    return $rc
 }
 
 T0=$(date +%s)
-t "variant $VARIANT, $("$WINE" --version)"
+t "variant $VARIANT (watchdog=$WATCHDOG nodbg=$NODBG), $("$WINE" --version)"
 WINEDLLOVERRIDES="mscoree=;mshtml=" "$WINE" wineboot --init >> "$OUT/wine.log" 2>&1; "$WINESERVER" -w
 t "prefix created"
-case "$VARIANT" in
-    C|E) set_gdi; t "renderer=gdi set" ;;
-esac
-case "$VARIANT" in
-    A|C|D) PATH="$SHIM:$PATH" WINE64="$WINE" WINETRICKS_LATEST_VERSION_CHECK=disabled limit 1800 sh "$WINETRICKS" -q dotnet48; RC=$? ;;
-    B|E) direct_ndp48; RC=$? ;;
-esac
-t "dotnet install rc=$RC after $(( $(date +%s) - T0 )) s"
+if [ "$NODBG" = 1 ]; then
+    "$WINE" reg add 'HKCU\Software\Wine\WineDbg' /v ShowCrashDialog /t REG_DWORD /d 0 /f >> "$OUT/wine.log" 2>&1
+    "$WINE" reg add 'HKCU\Software\Wine\DllOverrides' /v winedbg.exe /t REG_SZ /d '' /f >> "$OUT/wine.log" 2>&1
+    "$WINESERVER" -w
+    t "winedbg disabled"
+fi
+monitor & MON=$!
+PATH="$SHIM:$PATH" WINE64="$WINE" WINETRICKS_LATEST_VERSION_CHECK=disabled sh "$WINETRICKS" -q dotnet48 >> "$OUT/wine.log" 2>&1 &
+WT=$!
+RC=124
+for _ in $(seq 1 2400); do
+    if ! kill -0 "$WT" 2>/dev/null; then wait "$WT"; RC=$?; break; fi
+    sleep 1
+done
+kill "$MON" 2>/dev/null
+if [ "$RC" = 124 ]; then
+    t "TIMEOUT"; screencapture -x "$OUT/timeout.png" 2>/dev/null
+    ps -axo pid,ppid,etime,%cpu,command | grep -iE 'wine|\.exe' | grep -v grep > "$OUT/ps-at-timeout.txt"
+    "$WINESERVER" -k; kill "$WT" 2>/dev/null
+fi
+t "winetricks dotnet48 rc=$RC after $(( $(date +%s) - T0 )) s"
 "$WINE" winecfg -v win10 >> "$OUT/wine.log" 2>&1
 "$WINESERVER" -w
-ls "$WINEPREFIX/drive_c/windows/Microsoft.NET/Framework64/v4.0.30319/" > "$OUT/fw64.txt" 2>&1
-grep -q '^clr.dll$' "$OUT/fw64.txt" && t "clr.dll present (64-bit .NET 4.x installed)" || t "clr.dll MISSING"
+FW="$WINEPREFIX/drive_c/windows"
+ls -la "$FW/system32/mscoree.dll" "$FW/syswow64/mscoree.dll" "$FW/Microsoft.NET/Framework64/v4.0.30319/clr.dll" > "$OUT/files.txt" 2>&1
+cat "$OUT/files.txt" >> "$LOG"
 
 # Run Mission Planner (release build) and wait for the main window.
 MP="$WINEPREFIX/drive_c/MP"
 mkdir -p "$MP" && ditto -x -k "$HOME/mp.zip" "$MP"
-mkdir -p "$WINEPREFIX/drive_c/users/$USER/Documents/Mission Planner"
-cat > "$WINEPREFIX/drive_c/users/$USER/Documents/Mission Planner/config.xml" <<'XML'
+DOCS="$WINEPREFIX/drive_c/users/$USER/Documents/Mission Planner"
+mkdir -p "$DOCS"
+cat > "$DOCS/config.xml" <<'XML'
 <?xml version="1.0" encoding="utf-8"?>
 <Config>
   <AA_CheckEnableAltitudeAngel>False</AA_CheckEnableAltitudeAngel>
@@ -84,7 +89,7 @@ XML
 MPLOG="$WINEPREFIX/drive_c/ProgramData/Mission Planner/MissionPlanner.log"
 T1=$(date +%s)
 (cd "$MP" && "$WINE" MissionPlanner.exe >> "$OUT/mp-stdout.log" 2>&1 &)
-for _ in $(seq 1 300); do
+for _ in $(seq 1 150); do
     grep -q "appload time" "$MPLOG" 2>/dev/null && break
     sleep 2
 done
