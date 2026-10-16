@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Config>
+  <CHK_GDIPlus>True</CHK_GDIPlus>
   <AA_CheckEnableAltitudeAngel>False</AA_CheckEnableAltitudeAngel>
   <tabcontrolactions>tabQuick;tabActions;tabPagemessages;tabActionsSimple;tabPagePreFlight;tabGauges;tabTransponder;tabStatus;tabServo;tabAuxFunction;tabScripts;tabPayload;tabTLogs;tablogbrowse;</tabcontrolactions>
 </Config>

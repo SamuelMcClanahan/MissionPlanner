@@ -78,7 +78,11 @@ show() {
 }
 
 hide() {
-    if [ -n "$SHOW_PID" ]; then kill "$SHOW_PID" 2>/dev/null; SHOW_PID=""; fi
+    # Only kill the PID if it is still our own child (PIDs are reused).
+    if [ -n "$SHOW_PID" ] && [ "$(ps -o ppid= -p "$SHOW_PID" 2>/dev/null | tr -d ' ')" = "$$" ]; then
+        kill "$SHOW_PID" 2>/dev/null
+    fi
+    SHOW_PID=""
 }
 
 fail() {
@@ -99,6 +103,7 @@ LOCK="$STATE/lock"
 WATCHER_PID=""
 cleanup() {
     [ -n "$WATCHER_PID" ] && kill "$WATCHER_PID" 2>/dev/null
+    [ -n "${CANCEL_WATCH_PID:-}" ] && kill "$CANCEL_WATCH_PID" 2>/dev/null
     hide
     # Close the setup progress window if it is still open.
     [ -f "$STATE/progress" ] && echo "done" > "$STATE/progress"
@@ -106,7 +111,8 @@ cleanup() {
 }
 if ! mkdir "$LOCK" 2>/dev/null; then
     other="$(cat "$LOCK/pid" 2>/dev/null)"
-    if [ -n "$other" ] && kill -0 "$other" 2>/dev/null; then
+    # The PID must still be a launcher (after a crash or reboot it can be reused).
+    if [ -n "$other" ] && ps -p "$other" -o command= 2>/dev/null | grep -q 'Contents/MacOS/MissionPlanner'; then
         dialog "Mission Planner is already running or is still setting up."
         exit 0
     fi
@@ -115,6 +121,10 @@ if ! mkdir "$LOCK" 2>/dev/null; then
 fi
 echo $$ > "$LOCK/pid"
 trap cleanup EXIT
+
+# Keep the Mac awake (no idle sleep) during setup and while Mission Planner runs:
+# Mission Planner asks Windows not to sleep, but Wine on macOS does not pass that on.
+[ -x /usr/bin/caffeinate ] && /usr/bin/caffeinate -i -w $$ &
 
 # ---------------------------------------------------------------- checks
 
@@ -243,12 +253,21 @@ apply_settings() {
         printf '%s\n' '[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\clr_optimization_v4.0.30319_64]'
         printf '%s\n' '"Start"=dword:00000004'
         printf '\n'
+        # Without this, the first start after a Wine update can show two .NET
+        # error dialogs (Wine re-registers its own mscoree during the update).
+        printf '%s\n' '[HKEY_LOCAL_MACHINE\Software\Microsoft\.NETFramework]'
+        printf '%s\n' '"OnlyUseLatestCLR"=dword:00000001'
+        printf '%s\n' '[HKEY_LOCAL_MACHINE\Software\Wow6432Node\Microsoft\.NETFramework]'
+        printf '%s\n' '"OnlyUseLatestCLR"=dword:00000001'
+        printf '\n'
         printf '%s\n' '[HKEY_LOCAL_MACHINE\Software\Wine\Ports]'
         for n in $PORT_SLOTS; do
             printf '"COM%s"="%s"\n' "$n" "$PORTDIR/com$n"
         done
     } > "$reg"
-    "$WINE" regedit /S "Z:$reg" >> "$WINELOG" 2>&1 || fail "Could not write the Wine settings."
+    "$WINE" regedit /S "Z:$reg" >> "$WINELOG" 2>&1
+    # regedit always exits with 0: check that a value arrived.
+    "$WINE" reg query 'HKLM\Software\Wine\Ports' /v COM3 >> "$WINELOG" 2>&1 || fail "Could not write the Wine settings."
     "$WINESERVER" -w
 }
 
@@ -257,10 +276,26 @@ apply_settings() {
 PROGRESS_FILE="$STATE/progress"
 PROGRESS_APP="$RES/Setup Progress.app"
 
+CANCEL_WATCH_PID=""
+cancel_watch() {
+    # The progress window writes "cancel" when the user clicks Stop: end setup.
+    while kill -0 $$ 2>/dev/null; do
+        sleep 2
+        if [ "$(cat "$PROGRESS_FILE" 2>/dev/null)" = "cancel" ]; then
+            log "setup cancelled by the user"
+            "$WINESERVER" -k 2>/dev/null
+            kill -TERM $$ 2>/dev/null
+            return 0
+        fi
+    done
+}
+
 progress_start() {
     # $1 = title text for the fallback dialog
     echo "0|Starting" > "$PROGRESS_FILE"
     [ "$NONINTERACTIVE" = 1 ] && return 0
+    cancel_watch &
+    CANCEL_WATCH_PID=$!
     if [ -d "$PROGRESS_APP" ] && /usr/bin/open "$PROGRESS_APP" 2>/dev/null; then
         return 0
     fi
@@ -270,10 +305,13 @@ progress_start() {
 progress() {
     # progress PERCENT TEXT
     log "progress $1%: $2"
+    [ "$(cat "$PROGRESS_FILE" 2>/dev/null)" = "cancel" ] && return 0
     echo "$1|$2" > "$PROGRESS_FILE"
 }
 
 progress_end() {
+    [ -n "$CANCEL_WATCH_PID" ] && kill "$CANCEL_WATCH_PID" 2>/dev/null
+    CANCEL_WATCH_PID=""
     echo "done" > "$PROGRESS_FILE"
     hide
 }
@@ -289,7 +327,8 @@ download() {
     # download URL SHA256 FILE -> keeps a verified copy in the cache
     if [ -f "$3" ] && echo "$2  $3" | /usr/bin/shasum -a 256 -c - >/dev/null 2>&1; then return 0; fi
     mkdir -p "$(dirname "$3")"
-    /usr/bin/curl -fL --retry 3 -o "$3.part" "$1" >> "$WINELOG" 2>&1 || return 1
+    /usr/bin/curl -fL --connect-timeout 30 --speed-limit 2000 --speed-time 60 \
+        --retry 5 --retry-delay 5 -o "$3.part" "$1" >> "$WINELOG" 2>&1 || return 1
     echo "$2  $3.part" | /usr/bin/shasum -a 256 -c - >> "$WINELOG" 2>&1 || { rm -f "$3.part"; return 1; }
     mv -f "$3.part" "$3"
 }
@@ -331,7 +370,8 @@ install_dotnet() {
         printf '%s\n' '[HKEY_CURRENT_USER\Software\Wine\DllOverrides]'
         printf '%s\n' '"mscoree"="native"'
     } > "$SUPPORT/dotnet.reg"
-    "$WINE" regedit /S "Z:$SUPPORT/dotnet.reg" >> "$WINELOG" 2>&1 || return 1
+    "$WINE" regedit /S "Z:$SUPPORT/dotnet.reg" >> "$WINELOG" 2>&1
+    "$WINE" reg query 'HKCU\Software\Wine\DllOverrides' /v mscoree >> "$WINELOG" 2>&1 || return 1
     "$WINE" winecfg -v win7 >> "$WINELOG" 2>&1   # the .NET 4.8 installer wants Windows 7 or later
 
     winedbg_watchdog &
@@ -351,8 +391,11 @@ install_dotnet() {
         "$WINE" 'C:\windows\syswow64\regsvr32.exe' /s 'C:\windows\Microsoft.NET\Framework\v4.0.30319\diasymreader.dll'
         "$WINE" winecfg -v win10
     } >> "$WINELOG" 2>&1
-    # Exit codes 0 and 3010 (reboot required) are success.
-    [ "$rc" = 0 ] || [ "$rc" = 3010 ]
+    # Success: 0, 3010 (reboot required) and 1641 (reboot started). A Unix exit
+    # status has 8 bits, so 3010 and 1641 arrive as 194 and 105. clr.dll was
+    # checked above.
+    case "$rc" in 0|194|105) return 0 ;; esac
+    return 1
 }
 
 setup_prefix() {
@@ -420,21 +463,22 @@ update_ports
 port_watcher &
 WATCHER_PID=$!
 
-# Mission Planner asks Windows not to sleep while it runs. Wine on macOS does not
-# pass that on, so keep the Mac awake (no idle sleep in flight) until we exit.
-[ -x /usr/bin/caffeinate ] && /usr/bin/caffeinate -i -w $$ &
-
 [ -f "$WINELOG" ] && mv -f "$WINELOG" "$WINELOG.1"
 log "starting MissionPlanner.exe"
 cd "$MP_DIR" || fail "Mission Planner folder is missing."
 STARTED=$(date +%s)
-LOADS_BEFORE=$(grep -c "appload time" "$MP_LOG" 2>/dev/null); LOADS_BEFORE=${LOADS_BEFORE:-0}
+START_TS="$(date '+%Y-%m-%d %H:%M:%S')"
 "$WINE" "$MP_DIR/MissionPlanner.exe" "$@" >> "$WINELOG" 2>&1
 STATUS=$?
 log "MissionPlanner.exe exited with $STATUS after $(( $(date +%s) - STARTED )) s"
 # A start that ends with an error before the main window loads is a crash. Tell the user.
-LOADS_AFTER=$(grep -c "appload time" "$MP_LOG" 2>/dev/null); LOADS_AFTER=${LOADS_AFTER:-0}
-if [ "$STATUS" -ne 0 ] && [ "$LOADS_AFTER" -le "$LOADS_BEFORE" ]; then
+loaded_since_start() {
+    # Did the main window load in this run? Mission Planner's log rolls over at
+    # 1 MB into MissionPlanner.log.1, so read both and compare timestamps.
+    cat "$MP_LOG.1" "$MP_LOG" 2>/dev/null | grep "appload time" | cut -c1-19 \
+        | awk -v t="$START_TS" '$0 >= t { found = 1 } END { exit !found }'
+}
+if [ "$STATUS" -ne 0 ] && ! loaded_since_start; then
     "$WINESERVER" -k 2>/dev/null
     fail "Mission Planner stopped while it was starting (exit code $STATUS)."
 fi

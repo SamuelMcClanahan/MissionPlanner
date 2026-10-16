@@ -30,6 +30,8 @@ On Apple Silicon Macs it also uses Rosetta 2 (Apple's Intel translator).
   plugin is off (turn it on later in Mission Planner if you want it), and the Drone ID tab is on.
 - macOS can ask whether Mission Planner may use your Documents folder.
   Click **Allow**: Mission Planner keeps its logs, parameters and maps there.
+- macOS can ask whether Mission Planner may find devices on local networks.
+  Click **Allow** if you use UDP or Wi-Fi telemetry. USB does not need it.
 
 ## Connect the flight controller
 
@@ -48,6 +50,8 @@ On Apple Silicon Macs it also uses Rosetta 2 (Apple's Intel translator).
 - **Sleep:** while Mission Planner is open, the Mac does not go to idle sleep,
   so telemetry is not cut off. (The display can still turn off.)
 - **Voice alerts:** they do not work (Wine has no text-to-speech).
+- **HUD:** the app draws the HUD with GDI+, because the OpenGL HUD does not draw in Wine
+  on macOS. (Config > Planner > "GDI+ HUD" changes this.)
 
 ## Firmware
 
@@ -61,6 +65,8 @@ On Apple Silicon Macs it also uses Rosetta 2 (Apple's Intel translator).
 ## What does not work
 
 - DFU flashing and automatic board detection (see Firmware).
+- Serial speeds above 230400 baud can fail (for example 460800 for ExpressLRS MAVLink).
+  Wine on macOS cannot set them. A flight controller on USB is not affected.
 - Video, joystick and other Windows-only USB devices.
 
 ## Files and logs
