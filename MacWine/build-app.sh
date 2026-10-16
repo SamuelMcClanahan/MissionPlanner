@@ -33,8 +33,19 @@ echo "== Info.plist"
 sed "s/@VERSION@/$VERSION/g" "$HERE/Info.plist.in" > "$APP/Contents/Info.plist"
 
 echo "== launcher"
-cp "$HERE/launcher.sh" "$APP/Contents/MacOS/MissionPlanner"
-chmod 755 "$APP/Contents/MacOS/MissionPlanner"
+cp "$HERE/launcher.sh" "$APP/Contents/Resources/launcher.sh"
+chmod 755 "$APP/Contents/Resources/launcher.sh"
+# The main executable is a small compiled program that runs launcher.sh, so that
+# macOS treats Mission Planner (not /bin/bash) as the app for privacy prompts.
+if [ "$(uname -s)" = Darwin ]; then
+    clang -O2 -Wall -arch arm64 -arch x86_64 -mmacosx-version-min=11.0 \
+        -o "$APP/Contents/MacOS/MissionPlanner" "$HERE/stub.c"
+else
+    # Layout check on Linux: a script that does the same.
+    # shellcheck disable=SC2016  # $0 and $@ belong to the generated script
+    printf '#!/bin/sh\nexec /bin/bash "$(dirname "$(dirname "$0")")/Resources/launcher.sh" "$@"\n' > "$APP/Contents/MacOS/MissionPlanner"
+    chmod 755 "$APP/Contents/MacOS/MissionPlanner"
+fi
 echo "$VERSION" > "$APP/Contents/Resources/bundle-version.txt"
 
 echo "== Wine"

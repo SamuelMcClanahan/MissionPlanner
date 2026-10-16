@@ -1,6 +1,6 @@
 #!/bin/bash
 # Mission Planner for macOS (Wine bundle) launcher.
-# This file is the CFBundleExecutable of "Mission Planner.app". It runs the
+# Contents/MacOS/MissionPlanner (stub.c) runs this file from Contents/Resources. It runs the
 # Windows build of Mission Planner with the Wine copy in Contents/Resources/wine.
 # macOS ships bash 3.2, so this script avoids bash 4 features.
 
@@ -112,7 +112,7 @@ cleanup() {
 if ! mkdir "$LOCK" 2>/dev/null; then
     other="$(cat "$LOCK/pid" 2>/dev/null)"
     # The PID must still be a launcher (after a crash or reboot it can be reused).
-    if [ -n "$other" ] && ps -p "$other" -o command= 2>/dev/null | grep -q 'Contents/MacOS/MissionPlanner'; then
+    if [ -n "$other" ] && ps -p "$other" -o command= 2>/dev/null | grep -q 'Resources/launcher.sh'; then
         dialog "Mission Planner is already running or is still setting up."
         exit 0
     fi

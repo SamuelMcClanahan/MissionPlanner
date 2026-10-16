@@ -78,6 +78,8 @@ jobs:
 
       - name: Package
         run: |
+          file "dist/Mission Planner.app/Contents/MacOS/MissionPlanner"
+          codesign --verify --deep --verbose=1 "dist/Mission Planner.app" || true
           cd dist
           ditto -c -k --keepParent "Mission Planner.app" MissionPlanner-macOS-wine.zip
           mkdir dmg && cp -R "Mission Planner.app" dmg/ && ln -s /Applications dmg/Applications
@@ -86,6 +88,7 @@ jobs:
             hdiutil create -volname "Mission Planner" -srcfolder dmg -ov -format UDZO MissionPlanner-macOS-wine.dmg && break
             sleep 10
           done
+          [ -f MissionPlanner-macOS-wine.dmg ] || { echo "DMG was not created"; exit 1; }
           shasum -a 256 MissionPlanner-macOS-wine.* > checksums.txt
           cat checksums.txt
 
@@ -153,16 +156,17 @@ jobs:
           pkill -f MissionPlanner.exe || true
           "/Applications/Mission Planner.app/Contents/Resources/wine/bin/wineserver" -k || true
           sleep 5
-          N=$(grep -c "appload time" "$MPLOG" 2>/dev/null); N=${N:-0}
+          count() { cat "$MPLOG.1" "$MPLOG" 2>/dev/null | grep -c "appload time" || true; }
+          N=$(count)
           START=$(date +%s)
           "/Applications/Mission Planner.app/Contents/MacOS/MissionPlanner" &
           for i in $(seq 1 60); do
             sleep 5
-            C=$(grep -c "appload time" "$MPLOG" 2>/dev/null); if [ "${C:-0}" -gt "$N" ]; then
+            if [ "$(count)" -gt "$N" ]; then
               echo "Second start: main window loaded after $(( $(date +%s) - START )) s"; break
             fi
           done
-          grep "appload time" "$MPLOG" | tail -2
+          grep "appload time" "$MPLOG" | tail -2 || true
 
       - name: Collect logs
         if: always()
@@ -209,8 +213,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.bundle.outputs.version }}
         run: |
-          gh release delete macwine-latest --yes --cleanup-tag -R "$GITHUB_REPOSITORY" || true
-          gh release create macwine-latest -R "$GITHUB_REPOSITORY" --prerelease --target "$GITHUB_SHA" \
-            --title "Mission Planner for macOS (Wine) $VERSION" \
-            --notes "Built from ${GITHUB_REF_NAME} @ ${GITHUB_SHA}. Passed the macOS smoke test. Read READ ME FIRST in the DMG before the first start." \
-            dist/MissionPlanner-macOS-wine.dmg dist/MissionPlanner-macOS-wine.zip dist/checksums.txt
+          TAG=macwine-latest
+          TITLE="Mission Planner for macOS (Wine) $VERSION"
+          NOTES="Built from ${GITHUB_REF_NAME} @ ${GITHUB_SHA}. Passed the macOS smoke test. Read READ ME FIRST in the DMG before the first start."
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # Replace the files in place, so the release is never missing.
+            gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber \
+              dist/MissionPlanner-macOS-wine.dmg dist/MissionPlanner-macOS-wine.zip dist/checksums.txt
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" -f sha="$GITHUB_SHA" -F force=true
+            gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --title "$TITLE" --notes "$NOTES" --prerelease
+          else
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" --prerelease --target "$GITHUB_SHA" \
+              --title "$TITLE" --notes "$NOTES" \
+              dist/MissionPlanner-macOS-wine.dmg dist/MissionPlanner-macOS-wine.zip dist/checksums.txt
+          fi

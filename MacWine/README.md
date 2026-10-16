@@ -75,10 +75,12 @@ On Apple Silicon Macs it also uses Rosetta 2 (Apple's Intel translator).
 |---|---|
 | App logs (send these if something fails) | `~/Library/Logs/MissionPlannerWine` |
 | Mission Planner program log | `~/Library/MissionPlannerWine/prefix/drive_c/ProgramData/Mission Planner/MissionPlanner.log` |
-| Mission Planner data (logs, params, maps) | `~/Documents/Mission Planner` |
+| Mission Planner settings and logs (config.xml, tlogs, DataFlash logs) | `~/Documents/Mission Planner` |
+| Map tile cache, elevation data, parameter descriptions | `~/Library/MissionPlannerWine/prefix/drive_c/ProgramData/Mission Planner` |
 | Wine folder (.NET, Mission Planner copy) | `~/Library/MissionPlannerWine` |
 
 To reset the app, quit it and delete `~/Library/MissionPlannerWine`. The next start sets it up again.
+This also deletes the map cache and elevation data. Your settings and logs in Documents stay.
 
 ## Limits
 
