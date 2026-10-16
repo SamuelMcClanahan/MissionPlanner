@@ -202,6 +202,20 @@ winedbg_watchdog() {
     done
 }
 
+ngen32_guard() {
+    # On macOS the 32-bit .NET NGen worker (run by the .NET installers to
+    # precompile the framework) runs for more than 30 minutes under Rosetta.
+    # Mission Planner runs as a 64-bit process and does not use 32-bit native
+    # images, so stop 32-bit ngen/mscorsvw while .NET installs.
+    while kill -0 $$ 2>/dev/null; do
+        sleep 5
+        if pgrep -f 'Microsoft\.NET\\Framework\\v4\.0\.30319\\(ngen|mscorsvw)\.exe' >/dev/null; then
+            log "ngen32 guard: stopping 32-bit ngen/mscorsvw"
+            pkill -f 'Microsoft\.NET\\Framework\\v4\.0\.30319\\(ngen|mscorsvw)\.exe'
+        fi
+    done
+}
+
 apply_settings() {
     # All Wine settings in one registry import.
     reg="$SUPPORT/settings.reg"
@@ -322,9 +336,11 @@ install_dotnet() {
 
     winedbg_watchdog &
     watchdog_pid=$!
+    ngen32_guard &
+    guard_pid=$!
     (cd "$(dirname "$f48")" && WINEDLLOVERRIDES=fusion=b "$WINE" "$(basename "$f48")" /sfxlang:1027 /q /norestart) >> "$WINELOG" 2>&1
     rc=$?
-    kill "$watchdog_pid" 2>/dev/null
+    kill "$watchdog_pid" "$guard_pid" 2>/dev/null
     "$WINESERVER" -w
     log ".NET 4.8 installer exit code $rc"
     [ -f "$win/Microsoft.NET/Framework64/v4.0.30319/clr.dll" ] || return 1
@@ -384,16 +400,16 @@ NEED_MP=0
 if [ "$(cat "$STATE/mp-version" 2>/dev/null)" != "$BUNDLE_VERSION" ] || [ ! -f "$MP_DIR/MissionPlanner.exe" ]; then NEED_MP=1; fi
 
 if [ "$NEED_SETUP" = 1 ]; then
-    ask "First start: Mission Planner installs Microsoft .NET Framework 4.8 into its own Wine folder. This downloads about 120 MB from Microsoft and takes 5 to 20 minutes." "Continue" || exit 0
+    ask "First start: Mission Planner installs Microsoft .NET Framework 4.8 into its own Wine folder. This downloads about 120 MB from Microsoft and takes about 15 minutes." "Continue" || exit 0
     [ -d "$WINEPREFIX" ] && "$WINESERVER" -k 2>/dev/null
     rm -rf "$WINEPREFIX" "$STATE/prefix-ok" "$STATE/mp-version"
-    progress_start "Setting up Mission Planner. This takes 5 to 20 minutes."
+    progress_start "Setting up Mission Planner. This takes about 15 minutes."
     setup_prefix
     install_mp
     progress_end
     show "Setup is done. Mission Planner starts now." 10
 elif [ "$NEED_MP" = 1 ]; then
-    progress_start "Updating Mission Planner. This takes a few minutes."
+    progress_start "Updating Mission Planner. This takes about 7 minutes."
     install_mp
     progress_end
 fi

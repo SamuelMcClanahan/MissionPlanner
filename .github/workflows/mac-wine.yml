@@ -5,9 +5,6 @@ name: macOS Wine Bundle
 on:
   push:
     branches: [master, 'claude/**']
-    paths-ignore:
-      - '.github/workflows/mac-wine-exp.yml'
-      - 'MacWine/exp/**'
   workflow_dispatch:
 
 concurrency:

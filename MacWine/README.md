@@ -22,9 +22,10 @@ On Apple Silicon Macs it also uses Rosetta 2 (Apple's Intel translator).
 - If Rosetta 2 is not installed, the app asks to install it. macOS asks for your password.
 - The app installs Microsoft .NET Framework 4.8 into its own Wine folder.
   It downloads about 120 MB from Microsoft. Then it compiles Mission Planner to native
-  code once, so that later starts are faster. This takes 5 to 20 minutes.
+  code once, so that later starts are faster. This takes about 15 minutes
+  (measured on a GitHub macOS test machine: 4.5 minutes for .NET, 7 minutes to compile).
   A window with a progress bar shows while setup runs. Mission Planner opens when setup is done.
-  Later starts do not do this again. After an app update, the compile step runs again (a few minutes).
+  Later starts do not do this again. After an app update, the compile step runs again (about 7 minutes).
 - The app answers Mission Planner's two first-start questions for you: the Altitude Angel
   plugin is off (turn it on later in Mission Planner if you want it), and the Drone ID tab is on.
 - macOS can ask whether Mission Planner may use your Documents folder.
