@@ -21,9 +21,10 @@ On Apple Silicon Macs it also uses Rosetta 2 (Apple's Intel translator).
 
 - If Rosetta 2 is not installed, the app asks to install it. macOS asks for your password.
 - The app installs Microsoft .NET Framework 4.8 into its own Wine folder.
-  It downloads about 165 MB from Microsoft. This takes 5 to 20 minutes.
-  A message shows while setup runs. Mission Planner opens when setup is done.
-  Later starts do not do this again.
+  It downloads about 165 MB from Microsoft. Then it compiles Mission Planner to native
+  code once, so that later starts are faster. This takes 10 to 30 minutes.
+  A window with a progress bar shows while setup runs. Mission Planner opens when setup is done.
+  Later starts do not do this again. After an app update, the compile step runs again (a few minutes).
 - The app answers Mission Planner's two first-start questions for you: the Altitude Angel
   plugin is off (turn it on later in Mission Planner if you want it), and the Drone ID tab is on.
 - macOS can ask whether Mission Planner may use your Documents folder.
@@ -36,6 +37,16 @@ On Apple Silicon Macs it also uses Rosetta 2 (Apple's Intel translator).
   A second USB serial device becomes COM4, and so on, up to COM6.
   Mission Planner always lists COM3 to COM6, also when nothing is connected.
 - You can connect the flight controller before or after you start the app.
+
+## Using the app
+
+- **Keyboard:** Cmd works like Ctrl in Mission Planner (Cmd+C, Cmd+V, Cmd+A).
+  Left Option works like Alt. Right Option still types accented letters.
+- **Quit:** close the Mission Planner main window.
+- **Trackpad:** two-finger scrolling zooms the map in normal steps.
+- **Sleep:** while Mission Planner is open, the Mac does not go to idle sleep,
+  so telemetry is not cut off. (The display can still turn off.)
+- **Voice alerts:** they do not work (Wine has no text-to-speech).
 
 ## Firmware
 

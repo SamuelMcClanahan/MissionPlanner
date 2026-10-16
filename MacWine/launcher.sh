@@ -100,6 +100,8 @@ WATCHER_PID=""
 cleanup() {
     [ -n "$WATCHER_PID" ] && kill "$WATCHER_PID" 2>/dev/null
     hide
+    # Close the setup progress window if it is still open.
+    [ -f "$STATE/progress" ] && echo "done" > "$STATE/progress"
     rm -rf "$LOCK"
 }
 if ! mkdir "$LOCK" 2>/dev/null; then
@@ -196,71 +198,154 @@ run_winetricks() {
         sh "$RES/winetricks" -q "$@" >> "$WINELOG" 2>&1
 }
 
-register_ports() {
-    for n in $PORT_SLOTS; do
-        "$WINE" reg add 'HKLM\Software\Wine\Ports' /v "COM$n" /t REG_SZ /d "$PORTDIR/com$n" /f >> "$WINELOG" 2>&1 \
-            || fail "Could not register COM$n."
+winedbg_watchdog() {
+    # WineHQ bug 57998: on macOS a sub-installer of .NET 4.0 can crash, and Wine's
+    # crash handler (winedbg --auto) then waits forever. winedbg is disabled in
+    # settings.reg; this kills a winedbg that is still there after 30 s anyway.
+    seen=""
+    while kill -0 $$ 2>/dev/null; do
+        sleep 15
+        dbg="$(pgrep -f 'winedbg' | tr '\n' ' ')"
+        if [ -n "$dbg" ] && [ "$dbg" = "$seen" ]; then
+            log "watchdog: winedbg did not exit, killing it ($dbg)"
+            pkill -f winedbg
+            dbg=""
+        fi
+        seen="$dbg"
     done
 }
 
-seed_mp_config() {
-    # Answer Mission Planner's two first-start questions in advance, so the
-    # first start does not stop at modal dialogs:
-    #  - Altitude Angel plugin: off (it can be enabled later in Mission Planner)
-    #  - Drone ID plugin: the default tab list (else it asks for a restart)
-    docs_win="$("$WINE" cmd /c 'echo %USERPROFILE%\Documents' 2>/dev/null | tr -d '\r')"
-    docs="$("$WINE" winepath -u "$docs_win" 2>/dev/null | tr -d '\r')"
-    [ -n "$docs" ] || { log "warning: could not find the Documents folder"; return 0; }
-    cfg="$docs/Mission Planner/config.xml"
-    [ -f "$cfg" ] && return 0
-    mkdir -p "$docs/Mission Planner"
-    cat > "$cfg" <<'EOF'
-<?xml version="1.0" encoding="utf-8"?>
-<Config>
-  <AA_CheckEnableAltitudeAngel>False</AA_CheckEnableAltitudeAngel>
-  <tabcontrolactions>tabQuick;tabActions;tabPagemessages;tabActionsSimple;tabPagePreFlight;tabGauges;tabTransponder;tabStatus;tabServo;tabAuxFunction;tabScripts;tabPayload;tabTLogs;tablogbrowse;</tabcontrolactions>
-</Config>
-EOF
-    log "wrote default Mission Planner settings to $cfg"
+apply_settings() {
+    # All Wine settings in one registry import.
+    reg="$SUPPORT/settings.reg"
+    {
+        echo 'REGEDIT4'
+        echo
+        echo '[HKEY_CURRENT_USER\Software\Wine\DllOverrides]'
+        echo '"mshtml"=""'                # no Gecko download dialog
+        echo '"winedbg.exe"=""'           # a crash ends the program (bug 57998)
+        echo '"winemenubuilder.exe"=""'   # no menu or file association entries
+        echo
+        echo '[HKEY_CURRENT_USER\Software\Wine\WineDbg]'
+        echo '"ShowCrashDialog"=dword:00000000'
+        echo
+        echo '[HKEY_CURRENT_USER\Software\Wine\Mac Driver]'
+        echo '"LeftCommandIsCtrl"="y"'    # Cmd+C, Cmd+V, Cmd+A work like Ctrl
+        echo '"RightCommandIsCtrl"="y"'
+        echo '"LeftOptionIsAlt"="y"'      # right Option still types accents
+        echo '"UsePreciseScrolling"="n"'  # trackpad map zoom in normal steps
+        echo
+        # .NET background compiler services: they start compiling in the
+        # middle of a session. Mission Planner is compiled once at setup (ngen).
+        echo '[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\clr_optimization_v4.0.30319_32]'
+        echo '"Start"=dword:00000004'
+        echo '[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\clr_optimization_v4.0.30319_64]'
+        echo '"Start"=dword:00000004'
+        echo
+        echo '[HKEY_LOCAL_MACHINE\Software\Wine\Ports]'
+        for n in $PORT_SLOTS; do
+            echo "\"COM$n\"=\"$PORTDIR/com$n\""
+        done
+    } > "$reg"
+    "$WINE" regedit /S "Z:$reg" >> "$WINELOG" 2>&1 || fail "Could not write the Wine settings."
+    "$WINESERVER" -w
+}
+
+# ---------------------------------------------------------------- progress window
+
+PROGRESS_FILE="$STATE/progress"
+PROGRESS_APP="$RES/Setup Progress.app"
+
+progress_start() {
+    # $1 = title text for the fallback dialog
+    echo "0|Starting" > "$PROGRESS_FILE"
+    [ "$NONINTERACTIVE" = 1 ] && return 0
+    if [ -d "$PROGRESS_APP" ] && /usr/bin/open "$PROGRESS_APP" 2>/dev/null; then
+        return 0
+    fi
+    show "$(printf '%s\n\nYou can close this message. Mission Planner opens when it is done.\n\nLog files: %s' "$1" "$LOGDIR")" 3600
+}
+
+progress() {
+    # progress PERCENT TEXT
+    log "progress $1%: $2"
+    echo "$1|$2" > "$PROGRESS_FILE"
+}
+
+progress_end() {
+    echo "done" > "$PROGRESS_FILE"
+    hide
+}
+
+# ---------------------------------------------------------------- setup
+
+install_dotnet() {
+    winedbg_watchdog &
+    watchdog_pid=$!
+    run_winetricks dotnet48
+    rc=$?
+    kill "$watchdog_pid" 2>/dev/null
+    return $rc
 }
 
 setup_prefix() {
     log "creating Wine prefix in $WINEPREFIX"
+    progress 2 "Creating the Wine folder"
     # Do not install Wine Mono or Gecko. .NET Framework 4.8 replaces Mono.
     WINEDLLOVERRIDES="mscoree=;mshtml=" "$WINE" wineboot --init >> "$WINELOG" 2>&1 || fail "wineboot failed."
     "$WINESERVER" -w
-    # Keep Gecko off permanently, also when a newer Wine updates the prefix.
-    "$WINE" reg add 'HKCU\Software\Wine\DllOverrides' /v mshtml /t REG_SZ /d '' /f >> "$WINELOG" 2>&1
+    apply_settings
 
-    log "installing .NET Framework 4.8 (winetricks dotnet48)"
-    run_winetricks dotnet48 || fail ".NET Framework 4.8 did not install."
+    progress 8 "Downloading and installing Microsoft .NET Framework 4.8 (the longest step)"
+    log "installing .NET Framework 4.8"
+    install_dotnet || fail ".NET Framework 4.8 did not install."
     run_winetricks win10 || log "warning: winetricks win10 failed"
-
-    register_ports
-    seed_mp_config
-    "$WINESERVER" -w
+    apply_settings
     echo "$BUNDLE_VERSION" > "$STATE/prefix-ok"
     log "prefix ready"
 }
 
-if [ ! -f "$STATE/prefix-ok" ] || [ ! -f "$WINEPREFIX/system.reg" ]; then
-    ask "First start: Mission Planner installs Microsoft .NET Framework 4.8 into its own Wine folder. This downloads about 165 MB from Microsoft and takes 5 to 20 minutes." "Continue" || exit 0
-    [ -d "$WINEPREFIX" ] && "$WINESERVER" -k 2>/dev/null
-    rm -rf "$WINEPREFIX" "$STATE/prefix-ok" "$STATE/mp-version"
-    show "$(printf 'Setting up Mission Planner. This takes 5 to 20 minutes.\n\nYou can close this message. Mission Planner opens when setup is done.\n\nLog files: %s' "$LOGDIR")" 3600
-    setup_prefix
-    show "Setup is done. Mission Planner starts now." 10
-fi
-
-# Copy Mission Planner into the prefix when the bundle is new or updated.
-# A fresh copy (not a merge) so files removed in a newer version do not stay.
-if [ "$(cat "$STATE/mp-version" 2>/dev/null)" != "$BUNDLE_VERSION" ] || [ ! -f "$MP_DIR/MissionPlanner.exe" ]; then
+install_mp() {
+    # Copy Mission Planner into the prefix. A fresh copy (not a merge), so files
+    # removed in a newer version do not stay behind.
+    progress 75 "Copying Mission Planner"
     log "copying Mission Planner files into the prefix"
     rm -rf "$MP_DIR.new"
     /usr/bin/ditto "$RES/MissionPlanner" "$MP_DIR.new" || fail "Could not copy Mission Planner files."
     rm -rf "$MP_DIR"
     mv "$MP_DIR.new" "$MP_DIR" || fail "Could not install Mission Planner files."
+
+    # Compile Mission Planner and the .NET libraries it uses to native code once
+    # (NGen). Without this the JIT compiles them at every start, under Rosetta.
+    progress 80 "Optimizing Mission Planner for faster starts"
+    log "ngen install MissionPlanner.exe"
+    "$WINE" 'C:\windows\Microsoft.NET\Framework64\v4.0.30319\ngen.exe' install \
+        'C:\Program Files\Mission Planner\MissionPlanner.exe' /nologo >> "$WINELOG" 2>&1 \
+        || log "warning: ngen returned $? (Mission Planner still works, it starts slower)"
+    "$WINESERVER" -w
+    apply_settings
     echo "$BUNDLE_VERSION" > "$STATE/mp-version"
+    progress 100 "Done"
+}
+
+NEED_SETUP=0
+if [ ! -f "$STATE/prefix-ok" ] || [ ! -f "$WINEPREFIX/system.reg" ]; then NEED_SETUP=1; fi
+NEED_MP=0
+if [ "$(cat "$STATE/mp-version" 2>/dev/null)" != "$BUNDLE_VERSION" ] || [ ! -f "$MP_DIR/MissionPlanner.exe" ]; then NEED_MP=1; fi
+
+if [ "$NEED_SETUP" = 1 ]; then
+    ask "First start: Mission Planner installs Microsoft .NET Framework 4.8 into its own Wine folder. This downloads about 165 MB from Microsoft and takes 10 to 30 minutes." "Continue" || exit 0
+    [ -d "$WINEPREFIX" ] && "$WINESERVER" -k 2>/dev/null
+    rm -rf "$WINEPREFIX" "$STATE/prefix-ok" "$STATE/mp-version"
+    progress_start "Setting up Mission Planner. This takes 10 to 30 minutes."
+    setup_prefix
+    install_mp
+    progress_end
+    show "Setup is done. Mission Planner starts now." 10
+elif [ "$NEED_MP" = 1 ]; then
+    progress_start "Updating Mission Planner. This takes a few minutes."
+    install_mp
+    progress_end
 fi
 
 # ---------------------------------------------------------------- run
@@ -268,6 +353,10 @@ fi
 update_ports
 port_watcher &
 WATCHER_PID=$!
+
+# Mission Planner asks Windows not to sleep while it runs. Wine on macOS does not
+# pass that on, so keep the Mac awake (no idle sleep in flight) until we exit.
+[ -x /usr/bin/caffeinate ] && /usr/bin/caffeinate -i -w $$ &
 
 [ -f "$WINELOG" ] && mv -f "$WINELOG" "$WINELOG.1"
 log "starting MissionPlanner.exe"

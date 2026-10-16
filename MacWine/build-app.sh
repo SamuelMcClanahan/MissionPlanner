@@ -56,6 +56,11 @@ rm -rf "$APP/Contents/Resources/wine/share/wine/mono" "$APP/Contents/Resources/w
 echo "== Mission Planner"
 mkdir -p "$APP/Contents/Resources/MissionPlanner"
 cp -R "$MP_SRC/." "$APP/Contents/Resources/MissionPlanner/"
+# Defaults that Mission Planner reads from its program folder (the user's own
+# config.xml overrides them). They answer the two first-start questions so the
+# first start does not stop at modal dialogs: Altitude Angel off, and the
+# default tab list (the Drone ID plugin asks for a restart while it is unset).
+cp "$HERE/custom.config.xml" "$APP/Contents/Resources/MissionPlanner/custom.config.xml"
 
 if [ -n "$ICON" ] && command -v sips >/dev/null && command -v iconutil >/dev/null; then
     echo "== icon"
@@ -67,6 +72,31 @@ if [ -n "$ICON" ] && command -v sips >/dev/null && command -v iconutil >/dev/nul
         sips -z $d $d "$ICON" --out "$SET/icon_${s}x${s}@2x.png" >/dev/null
     done
     iconutil -c icns "$SET" -o "$APP/Contents/Resources/AppIcon.icns"
+fi
+
+if command -v osacompile >/dev/null; then
+    echo "== setup progress window"
+    osacompile -o "$APP/Contents/Resources/Setup Progress.app" "$HERE/progress.applescript"
+    [ -f "$APP/Contents/Resources/AppIcon.icns" ] && \
+        cp "$APP/Contents/Resources/AppIcon.icns" "$APP/Contents/Resources/Setup Progress.app/Contents/Resources/applet.icns"
+    # The icon change breaks the applet's signature: sign it again.
+    command -v codesign >/dev/null && codesign --force --sign - "$APP/Contents/Resources/Setup Progress.app"
+fi
+
+LOADER="$APP/Contents/Resources/wine/lib/wine/x86_64-unix/wine"
+if command -v codesign >/dev/null && [ -f "$LOADER" ]; then
+    # The Dock shows the name in the Wine loader's embedded Info.plist ("Wine").
+    # Replace it with "Mission Planner" in place (same length), then re-sign the
+    # loader. If anything goes wrong, keep the original loader.
+    echo "== Dock name"
+    cp "$LOADER" "$TMP/wine-loader.orig"
+    if perl -0777 -i -pe 'BEGIN{$n="Mission Planner"} s{(<\?xml.*?</plist>)}{ my $o=$1; (my $p=$o)=~s/>\s+</></g; $p=~s{(<key>CFBundleName</key><string>)[^<]*(</string>)}{$1$n$2}; die "too long\n" if length($p)>length($o); $p.(" " x (length($o)-length($p))) }se' "$LOADER" \
+        && codesign --force --sign - "$LOADER" && codesign --verify "$LOADER"; then
+        echo "loader renamed"
+    else
+        echo "warning: could not rename the Wine loader, keeping the original" >&2
+        cp "$TMP/wine-loader.orig" "$LOADER"
+    fi
 fi
 
 if command -v codesign >/dev/null; then

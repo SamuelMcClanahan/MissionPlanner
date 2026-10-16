@@ -24,6 +24,10 @@
 	<string>@VERSION@</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>11.0</string>
+	<!-- The launcher is a script: keep it out of the Dock. The Dock shows the
+	     Mission Planner window process instead. -->
+	<key>LSUIElement</key>
+	<true/>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 </dict>
