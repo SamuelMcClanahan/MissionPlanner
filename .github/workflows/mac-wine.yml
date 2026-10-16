@@ -120,27 +120,60 @@ jobs:
             sudo softwareupdate --install-rosetta --agree-to-license
           fi
           arch -x86_64 /usr/bin/true && echo "Rosetta OK"
+          # Helpers for the start steps.
+          cat > "$RUNNER_TEMP/smoke-lib.sh" <<'EOF'
+          APP="/Applications/Mission Planner.app"
+          export WINEPREFIX="$HOME/Library/MissionPlannerWine/prefix"
+          WINE="$APP/Contents/Resources/wine/bin/wine"
+          MPLOG="$WINEPREFIX/drive_c/ProgramData/Mission Planner/MissionPlanner.log"
+          LLOG="$HOME/Library/Logs/MissionPlannerWine/launcher.log"
+          now() { date '+%Y-%m-%d %H:%M:%S'; }
+          # True when a log has a line that contains $2 at or after time $1.
+          # The time check works when MissionPlanner.log rolls over to .1 and .2.
+          since() { cat "$3.2" "$3.1" "$3" 2>/dev/null | grep -F "$2" | cut -c1-19 | awk -v t="$1" '$0 >= t { f = 1 } END { exit !f }'; }
+          loaded_since() { since "$1" "appload time" "$MPLOG"; }
+          exe_started_since() { since "$1" "starting MissionPlanner.exe" "$LLOG"; }
+          tmo() { perl -e 'alarm shift; exec @ARGV' "$@"; }
+          # Records where Mission Planner stops: process list, Wine backtraces, macOS logs.
+          diag() {
+            mkdir -p out
+            ps -axo pid,ppid,stat,etime,time,command | grep -E -i 'wine|mission|launcher|\.exe|caffeinate|osascript' | grep -v grep | cut -c1-220 > "out/$1-ps.txt" || true
+            screencapture -x "out/$1.png" || true
+            WINEDEBUG=-all WINEDLLOVERRIDES="winedbg.exe=b" tmo 60 "$WINE" winedbg --command "info process" > "out/$1-procs.txt" 2>&1 || true
+            wpid=$(grep -i 'MissionPlanner.exe' "out/$1-procs.txt" | grep -o -E '[0-9a-fA-F]{8}' | head -1)
+            printf 'info threads\ninfo share\nbt all\ndetach\n' > "$WINEPREFIX/drive_c/bt.txt"
+            if [ -n "$wpid" ]; then
+              WINEDEBUG=-all WINEDLLOVERRIDES="winedbg.exe=b" tmo 180 "$WINE" winedbg --file 'C:\bt.txt' "0x$wpid" > "out/$1-bt.txt" 2>&1 || true
+            fi
+            log show --last 15m --style compact --predicate 'process == "tccd" OR process == "syspolicyd" OR subsystem == "com.apple.TCC"' 2>/dev/null | tail -300 > "out/$1-syslog.txt" || true
+          }
+          EOF
 
       - name: First start (installs .NET 4.8, then starts Mission Planner)
         run: |
+          . "$RUNNER_TEMP/smoke-lib.sh"
           export MPWINE_NONINTERACTIVE=1
           # Behave like a Mac without the Xcode Command Line Tools.
           export DEVELOPER_DIR=/var/empty
-          MPLOG="$HOME/Library/MissionPlannerWine/prefix/drive_c/ProgramData/Mission Planner/MissionPlanner.log"
-          START=$(date +%s)
-          "/Applications/Mission Planner.app/Contents/MacOS/MissionPlanner" &
+          T=$(now); START=$(date +%s); EXE=""
+          "$APP/Contents/MacOS/MissionPlanner" &
           for i in $(seq 1 300); do
             sleep 10
-            if grep -q "appload time" "$MPLOG" 2>/dev/null; then
+            if loaded_since "$T"; then
               echo "Mission Planner main window loaded after $(( $(date +%s) - START )) s"; break
             fi
             if ! pgrep -f 'Contents/MacOS/MissionPlanner' >/dev/null; then
               echo "Launcher exited early"; break
             fi
+            # After setup, the main window must load within 5 minutes.
+            if [ -z "$EXE" ] && exe_started_since "$T"; then EXE=$(date +%s); fi
+            if [ -n "$EXE" ] && [ $(( $(date +%s) - EXE )) -gt 300 ]; then
+              echo "Mission Planner did not load within 5 minutes after setup"; diag first; break
+            fi
           done
           sleep 60
           screencapture -x screenshot.png || true
-          if grep -q "appload time" "$MPLOG" 2>/dev/null && pgrep -f MissionPlanner.exe >/dev/null; then
+          if loaded_since "$T" && pgrep -f MissionPlanner.exe >/dev/null; then
             echo PASS > result.txt
           else
             echo FAIL > result.txt
@@ -150,30 +183,31 @@ jobs:
       - name: Second start (timing)
         if: success()
         run: |
+          . "$RUNNER_TEMP/smoke-lib.sh"
           export MPWINE_NONINTERACTIVE=1
-          MPLOG="$HOME/Library/MissionPlannerWine/prefix/drive_c/ProgramData/Mission Planner/MissionPlanner.log"
           pkill -f 'Contents/MacOS/MissionPlanner' || true
           pkill -f MissionPlanner.exe || true
-          "/Applications/Mission Planner.app/Contents/Resources/wine/bin/wineserver" -k || true
+          "$APP/Contents/Resources/wine/bin/wineserver" -k || true
           sleep 5
-          count() { cat "$MPLOG.1" "$MPLOG" 2>/dev/null | grep -c "appload time" || true; }
-          N=$(count)
-          START=$(date +%s)
-          "/Applications/Mission Planner.app/Contents/MacOS/MissionPlanner" &
+          T=$(now); START=$(date +%s)
+          "$APP/Contents/MacOS/MissionPlanner" &
           for i in $(seq 1 60); do
             sleep 5
-            if [ "$(count)" -gt "$N" ]; then
+            if loaded_since "$T"; then
               echo "Second start: main window loaded after $(( $(date +%s) - START )) s"; break
             fi
           done
-          grep "appload time" "$MPLOG" | tail -2 || true
+          if ! loaded_since "$T"; then
+            echo "Second start: Mission Planner did not load within 5 minutes"; diag second
+            echo FAIL > result.txt
+          fi
 
       - name: Collect logs
         if: always()
         run: |
           mkdir -p out
           cp -R ~/Library/Logs/MissionPlannerWine out/ 2>/dev/null || true
-          cp "$HOME/Library/MissionPlannerWine/prefix/drive_c/ProgramData/Mission Planner/MissionPlanner.log" out/ 2>/dev/null || true
+          cp "$HOME/Library/MissionPlannerWine/prefix/drive_c/ProgramData/Mission Planner/"MissionPlanner.log* out/ 2>/dev/null || true
           cp screenshot.png result.txt out/ 2>/dev/null || true
           tail -60 out/MissionPlannerWine/launcher.log || true
           tail -60 out/MissionPlannerWine/wine.log.1 || true
