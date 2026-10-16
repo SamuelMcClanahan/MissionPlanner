@@ -7,8 +7,12 @@ on:
     branches: [master, 'claude/**']
   workflow_dispatch:
 
+concurrency:
+  group: mac-wine-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
-  contents: write
+  contents: read
 
 env:
   WINE_URL: https://github.com/Gcenx/macOS_Wine_builds/releases/download/11.0_1/wine-stable-11.0_1-osx64.tar.xz
@@ -48,6 +52,8 @@ jobs:
     name: Build Mission Planner.app
     needs: windows
     runs-on: macos-15
+    outputs:
+      version: ${{ steps.asm.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -66,10 +72,11 @@ jobs:
           echo "$WINETRICKS_SHA256  winetricks" | shasum -a 256 -c -
 
       - name: Assemble app
+        id: asm
         run: |
           MPV="$(tr -d '\r' < mp-windows/version.txt 2>/dev/null || echo 0)"
           VERSION="${MPV}-$(git rev-parse --short HEAD)"
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           bash MacWine/build-app.sh --mp mp-windows --wine wine.tar.xz --winetricks winetricks \
             --version "$VERSION" --out dist --icon mpdesktop150.png
 
@@ -79,7 +86,10 @@ jobs:
           ditto -c -k --keepParent "Mission Planner.app" MissionPlanner-macOS-wine.zip
           mkdir dmg && cp -R "Mission Planner.app" dmg/ && ln -s /Applications dmg/Applications
           cp ../MacWine/README.md "dmg/READ ME FIRST.md"
-          hdiutil create -volname "Mission Planner" -srcfolder dmg -ov -format UDZO MissionPlanner-macOS-wine.dmg
+          for i in 1 2 3; do
+            hdiutil create -volname "Mission Planner" -srcfolder dmg -ov -format UDZO MissionPlanner-macOS-wine.dmg && break
+            sleep 10
+          done
           shasum -a 256 MissionPlanner-macOS-wine.* > checksums.txt
           cat checksums.txt
 
@@ -90,18 +100,6 @@ jobs:
             dist/MissionPlanner-macOS-wine.dmg
             dist/MissionPlanner-macOS-wine.zip
             dist/checksums.txt
-
-      - name: Publish prerelease
-        if: github.event_name != 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          TAG="macwine-latest"
-          gh release delete "$TAG" --yes --cleanup-tag -R "$GITHUB_REPOSITORY" 2>/dev/null || true
-          gh release create "$TAG" -R "$GITHUB_REPOSITORY" --prerelease --target "$GITHUB_SHA" \
-            --title "Mission Planner for macOS (Wine) $VERSION" \
-            --notes "Built from ${GITHUB_REF_NAME} @ ${GITHUB_SHA}. Read MacWine/README.md before first start." \
-            dist/MissionPlanner-macOS-wine.dmg dist/MissionPlanner-macOS-wine.zip dist/checksums.txt
 
   smoke-test:
     name: Smoke test on macOS
@@ -117,6 +115,8 @@ jobs:
       - name: Install app and Rosetta
         run: |
           ditto -x -k dist/MissionPlanner-macOS-wine.zip /Applications
+          # Like a download from the web: set quarantine, the launcher must remove it.
+          xattr -r -w com.apple.quarantine "0081;00000000;Safari;" "/Applications/Mission Planner.app"
           if ! arch -x86_64 /usr/bin/true 2>/dev/null; then
             sudo softwareupdate --install-rosetta --agree-to-license
           fi
@@ -125,30 +125,59 @@ jobs:
       - name: First start (installs .NET 4.8, then starts Mission Planner)
         run: |
           export MPWINE_NONINTERACTIVE=1
+          # Behave like a Mac without the Xcode Command Line Tools.
+          export DEVELOPER_DIR=/var/empty
+          MPLOG="$HOME/Library/MissionPlannerWine/prefix/drive_c/ProgramData/Mission Planner/MissionPlanner.log"
+          START=$(date +%s)
           "/Applications/Mission Planner.app/Contents/MacOS/MissionPlanner" &
-          for i in $(seq 1 240); do
+          for i in $(seq 1 300); do
             sleep 10
-            if pgrep -f 'MissionPlanner.exe' >/dev/null && [ -f ~/Library/MissionPlannerWine/state/mp-version ]; then
-              echo "MissionPlanner.exe is running after $((i*10)) s"; break
+            if grep -q "appload time" "$MPLOG" 2>/dev/null; then
+              echo "Mission Planner main window loaded after $(( $(date +%s) - START )) s"; break
             fi
             if ! pgrep -f 'Contents/MacOS/MissionPlanner' >/dev/null; then
               echo "Launcher exited early"; break
             fi
           done
-          sleep 120
-          pgrep -fl 'MissionPlanner.exe' || { echo "MissionPlanner.exe is NOT running"; echo FAIL > result.txt; }
-          [ -f result.txt ] || echo PASS > result.txt
+          sleep 60
           screencapture -x screenshot.png || true
+          if grep -q "appload time" "$MPLOG" 2>/dev/null && pgrep -f MissionPlanner.exe >/dev/null; then
+            echo PASS > result.txt
+          else
+            echo FAIL > result.txt
+          fi
+          grep -E "appload time|Exception" "$MPLOG" 2>/dev/null | head -20 || true
+
+      - name: Second start (timing)
+        if: success()
+        run: |
+          export MPWINE_NONINTERACTIVE=1
+          MPLOG="$HOME/Library/MissionPlannerWine/prefix/drive_c/ProgramData/Mission Planner/MissionPlanner.log"
+          pkill -f 'Contents/MacOS/MissionPlanner' || true
+          pkill -f MissionPlanner.exe || true
+          "/Applications/Mission Planner.app/Contents/Resources/wine/bin/wineserver" -k || true
+          sleep 5
+          N=$(grep -c "appload time" "$MPLOG" 2>/dev/null); N=${N:-0}
+          START=$(date +%s)
+          "/Applications/Mission Planner.app/Contents/MacOS/MissionPlanner" &
+          for i in $(seq 1 60); do
+            sleep 5
+            C=$(grep -c "appload time" "$MPLOG" 2>/dev/null); if [ "${C:-0}" -gt "$N" ]; then
+              echo "Second start: main window loaded after $(( $(date +%s) - START )) s"; break
+            fi
+          done
+          grep "appload time" "$MPLOG" | tail -2
 
       - name: Collect logs
         if: always()
         run: |
           mkdir -p out
           cp -R ~/Library/Logs/MissionPlannerWine out/ 2>/dev/null || true
-          cp -R ~/Documents/"Mission Planner" out/userdata 2>/dev/null || true
+          cp "$HOME/Library/MissionPlannerWine/prefix/drive_c/ProgramData/Mission Planner/MissionPlanner.log" out/ 2>/dev/null || true
           cp screenshot.png result.txt out/ 2>/dev/null || true
-          tail -50 out/MissionPlannerWine/launcher.log || true
-          tail -80 out/MissionPlannerWine/wine.log || true
+          tail -60 out/MissionPlannerWine/launcher.log || true
+          tail -60 out/MissionPlannerWine/wine.log.1 || true
+          tail -40 out/MissionPlannerWine/wine.log || true
           cat result.txt
           grep -q PASS result.txt
 
@@ -157,3 +186,30 @@ jobs:
         with:
           name: smoke-test-results
           path: out
+
+  publish:
+    name: Publish macwine-latest
+    needs: [bundle, smoke-test]
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/claude/cool-gates-xso4we'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: macwine-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: MissionPlanner-macOS-wine
+          path: dist
+
+      - name: Publish prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.bundle.outputs.version }}
+        run: |
+          gh release delete macwine-latest --yes --cleanup-tag -R "$GITHUB_REPOSITORY" || true
+          gh release create macwine-latest -R "$GITHUB_REPOSITORY" --prerelease --target "$GITHUB_SHA" \
+            --title "Mission Planner for macOS (Wine) $VERSION" \
+            --notes "Built from ${GITHUB_REF_NAME} @ ${GITHUB_SHA}. Passed the macOS smoke test. Read READ ME FIRST in the DMG before the first start." \
+            dist/MissionPlanner-macOS-wine.dmg dist/MissionPlanner-macOS-wine.zip dist/checksums.txt

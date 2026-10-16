@@ -8,44 +8,57 @@ On Apple Silicon Macs it also uses Rosetta 2 (Apple's Intel translator).
 
 1. Download `MissionPlanner-macOS-wine.dmg` from the `macwine-latest` release of this repository.
 2. Open the DMG and drag **Mission Planner** to **Applications**.
-3. The app has no Apple signature. Remove the download quarantine one time. In Terminal:
+3. The app has no Apple signature. Remove the download quarantine. In Terminal:
 
    ```
    xattr -dr com.apple.quarantine "/Applications/Mission Planner.app"
    ```
 
-   If you do not do this, macOS blocks the app. You can also use
-   System Settings > Privacy & Security > **Open Anyway**.
+   Do this again after each update.
 4. Open **Mission Planner** from Applications.
 
 ## First start
 
 - If Rosetta 2 is not installed, the app asks to install it. macOS asks for your password.
 - The app installs Microsoft .NET Framework 4.8 into its own Wine folder.
-  It downloads about 120 MB from Microsoft. This takes 5 to 20 minutes.
-  You get a notice when it is done. Later starts do not do this again.
+  It downloads about 165 MB from Microsoft. This takes 5 to 20 minutes.
+  A message shows while setup runs. Mission Planner opens when setup is done.
+  Later starts do not do this again.
+- The app answers Mission Planner's two first-start questions for you: the Altitude Angel
+  plugin is off (turn it on later in Mission Planner if you want it), and the Drone ID tab is on.
+- macOS can ask whether Mission Planner may use your Documents folder.
+  Click **Allow**: Mission Planner keeps its logs, parameters and maps there.
 
 ## Connect the flight controller
 
 - Connect the flight controller with USB. No driver is necessary.
-- In Mission Planner, select **COM3** (the first USB device) and click **Connect**.
-  A second USB device becomes COM4, and so on, up to COM6.
+- In Mission Planner, select **COM3** (the first USB serial device) and click **Connect**.
+  A second USB serial device becomes COM4, and so on, up to COM6.
+  Mission Planner always lists COM3 to COM6, also when nothing is connected.
 - You can connect the flight controller before or after you start the app.
+
+## Firmware
+
+- **Install Firmware** cannot detect the board automatically in Wine.
+  Download the `.apj` file for your board from https://firmware.ardupilot.org
+  and use **Load custom firmware**. This works over USB through the ArduPilot bootloader.
+- DFU flashing does not work. You need it only for the first ArduPilot install on a board
+  that has other firmware (for example Betaflight). Do that one time with another tool,
+  for example `dfu-util` or STM32CubeProgrammer.
 
 ## What does not work
 
-- DFU flashing (the first ArduPilot install on a board that has other firmware).
-  Do that one time with another tool, for example `dfu-util` or STM32CubeProgrammer.
-  After that, firmware updates in Mission Planner work over USB.
+- DFU flashing and automatic board detection (see Firmware).
 - Video, joystick and other Windows-only USB devices.
 
 ## Files and logs
 
 | What | Where |
 |---|---|
-| Wine folder (.NET, Mission Planner copy) | `~/Library/MissionPlannerWine` |
 | App logs (send these if something fails) | `~/Library/Logs/MissionPlannerWine` |
+| Mission Planner program log | `~/Library/MissionPlannerWine/prefix/drive_c/ProgramData/Mission Planner/MissionPlanner.log` |
 | Mission Planner data (logs, params, maps) | `~/Documents/Mission Planner` |
+| Wine folder (.NET, Mission Planner copy) | `~/Library/MissionPlannerWine` |
 
 To reset the app, quit it and delete `~/Library/MissionPlannerWine`. The next start sets it up again.
 
@@ -61,5 +74,6 @@ To reset the app, quit it and delete `~/Library/MissionPlannerWine`. The next st
 1. The Windows job builds Mission Planner from this repository.
 2. The macOS job runs `MacWine/build-app.sh`, which puts the Windows build, Wine
    (Gcenx macOS build, pinned by SHA-256) and winetricks into `Mission Planner.app`.
-3. The smoke test job installs the app on a GitHub macOS machine, runs the first start
-   and checks that `MissionPlanner.exe` keeps running.
+3. The smoke test job installs the app on a GitHub macOS machine (quarantined, without
+   the Xcode tools), runs the first start and checks that the Mission Planner main window loads.
+4. If the smoke test passes, the publish job updates the `macwine-latest` prerelease.

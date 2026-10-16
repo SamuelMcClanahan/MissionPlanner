@@ -31,6 +31,7 @@ export LANG="${LANG:-en_US.UTF-8}"
 PORT_SLOTS="3 4 5 6"
 
 MP_DIR="$WINEPREFIX/drive_c/Program Files/Mission Planner"
+MP_LOG="$WINEPREFIX/drive_c/ProgramData/Mission Planner/MissionPlanner.log"
 
 mkdir -p "$SUPPORT" "$LOGDIR" "$PORTDIR" "$STATE" "$W_CACHE"
 LOG="$LOGDIR/launcher.log"
@@ -43,34 +44,77 @@ log() {
 # MPWINE_NONINTERACTIVE=1 (CI smoke test): no dialogs, every question answers yes.
 NONINTERACTIVE="${MPWINE_NONINTERACTIVE:-0}"
 
+# The message text is passed as an argument, not pasted into the AppleScript
+# source, so quotes and backslashes in it cannot break the script.
 dialog() {
-    # dialog "message" -> shows an OK dialog
-    [ "$NONINTERACTIVE" = 1 ] && { log "dialog: $1"; return 0; }
-    /usr/bin/osascript -e "display dialog \"$1\" with title \"Mission Planner\" buttons {\"OK\"} default button \"OK\" with icon caution" >/dev/null 2>&1
+    # dialog TEXT -> modal OK dialog
+    log "dialog: $1"
+    [ "$NONINTERACTIVE" = 1 ] && return 0
+    /usr/bin/osascript -e 'on run argv' -e 'activate' \
+        -e 'display dialog (item 1 of argv) with title "Mission Planner" buttons {"OK"} default button "OK" with icon caution' \
+        -e 'end run' "$1" >/dev/null 2>&1
 }
 
 ask() {
-    # ask "message" "button" -> returns 0 if the button is clicked
-    [ "$NONINTERACTIVE" = 1 ] && { log "ask: $1 -> $2"; return 0; }
-    /usr/bin/osascript -e "button returned of (display dialog \"$1\" with title \"Mission Planner\" buttons {\"Quit\", \"$2\"} default button \"$2\")" 2>/dev/null | grep -q "$2"
+    # ask TEXT BUTTON -> returns 0 if BUTTON is clicked
+    log "ask: $1"
+    [ "$NONINTERACTIVE" = 1 ] && return 0
+    [ "$(/usr/bin/osascript -e 'on run argv' -e 'activate' \
+        -e 'button returned of (display dialog (item 1 of argv) with title "Mission Planner" buttons {"Quit", item 2 of argv} default button (item 2 of argv))' \
+        -e 'end run' "$1" "$2" 2>/dev/null)" = "$2" ]
 }
 
-notify() {
-    log "notice: $1"
+SHOW_PID=""
+show() {
+    # show TEXT SECONDS -> non-blocking dialog that closes itself.
+    # (Notifications from osascript are often not shown, so a dialog is used.)
+    log "show: $1"
+    hide
     [ "$NONINTERACTIVE" = 1 ] && return 0
-    /usr/bin/osascript -e "display notification \"$1\" with title \"Mission Planner\"" >/dev/null 2>&1
+    /usr/bin/osascript -e 'on run argv' -e 'activate' \
+        -e 'display dialog (item 1 of argv) with title "Mission Planner" buttons {"OK"} default button "OK" giving up after ((item 2 of argv) as integer)' \
+        -e 'end run' "$1" "$2" >/dev/null 2>&1 &
+    SHOW_PID=$!
+}
+
+hide() {
+    if [ -n "$SHOW_PID" ]; then kill "$SHOW_PID" 2>/dev/null; SHOW_PID=""; fi
 }
 
 fail() {
     log "ERROR: $1"
-    dialog "$1\n\nLog files: $LOGDIR"
+    hide
+    dialog "$(printf '%s\n\nLog files: %s' "$1" "$LOGDIR")"
     exit 1
 }
 
 # Old macOS versions pass a -psn_ process serial number argument. Drop it.
-if [ "${1:-}" != "${1#-psn_}" ]; then shift; fi
+case "${1:-}" in -psn_*) shift ;; esac
 
 log "=== start, bundle $BUNDLE_VERSION, macOS $(sw_vers -productVersion 2>/dev/null), $(uname -m)"
+
+# ---------------------------------------------------------------- single instance
+
+LOCK="$STATE/lock"
+WATCHER_PID=""
+cleanup() {
+    [ -n "$WATCHER_PID" ] && kill "$WATCHER_PID" 2>/dev/null
+    hide
+    rm -rf "$LOCK"
+}
+if ! mkdir "$LOCK" 2>/dev/null; then
+    other="$(cat "$LOCK/pid" 2>/dev/null)"
+    if [ -n "$other" ] && kill -0 "$other" 2>/dev/null; then
+        dialog "Mission Planner is already running or is still setting up."
+        exit 0
+    fi
+    rm -rf "$LOCK"
+    mkdir "$LOCK" || exit 1
+fi
+echo $$ > "$LOCK/pid"
+trap cleanup EXIT
+
+# ---------------------------------------------------------------- checks
 
 # Wine in this bundle is x86_64. Apple Silicon Macs run it with Rosetta 2.
 if [ "$(uname -m)" = "arm64" ] && ! /usr/bin/arch -x86_64 /usr/bin/true 2>/dev/null; then
@@ -84,12 +128,19 @@ fi
 
 [ -x "$WINE" ] || fail "Wine is missing from the app bundle."
 
+# A downloaded app keeps the com.apple.quarantine attribute on every file.
+# Wine's own binaries and libraries are then blocked one by one, so remove it.
+if /usr/bin/xattr -p com.apple.quarantine "$WINE" >/dev/null 2>&1; then
+    log "removing quarantine attribute from the app bundle"
+    /usr/bin/xattr -dr com.apple.quarantine "$CONTENTS/.." 2>/dev/null \
+        || fail "macOS quarantine is still set. Move Mission Planner to Applications and run the xattr command in READ ME FIRST."
+fi
+
 # ---------------------------------------------------------------- port watcher
 
 is_wanted_port() {
     case "$1" in
-        /dev/cu.Bluetooth-Incoming-Port|/dev/cu.debug-console|/dev/cu.wlan-debug) return 1 ;;
-        /dev/cu.*) return 0 ;;
+        /dev/cu.usbmodem*|/dev/cu.usbserial*|/dev/cu.SLAB_USBtoUART*|/dev/cu.wchusbserial*) return 0 ;;
     esac
     return 1
 }
@@ -99,17 +150,17 @@ update_ports() {
     for n in $PORT_SLOTS; do
         link="$PORTDIR/com$n"
         if [ -L "$link" ] && [ ! -e "$link" ]; then
-            log "port COM$n: $(readlink "$link") removed"
+            log "port COM$n removed"
             rm -f "$link"
         fi
     done
     # Give each new device the lowest free slot.
     for dev in /dev/cu.*; do
-        [ -e "$dev" ] || continue
         is_wanted_port "$dev" || continue
+        [ -e "$dev" ] || continue
         taken=""
         for n in $PORT_SLOTS; do
-            if [ "$(readlink "$PORTDIR/com$n" 2>/dev/null)" = "$dev" ]; then taken=1; break; fi
+            if [ "$PORTDIR/com$n" -ef "$dev" ]; then taken=1; break; fi
         done
         [ -n "$taken" ] && continue
         for n in $PORT_SLOTS; do
@@ -123,13 +174,27 @@ update_ports() {
 }
 
 port_watcher() {
-    while :; do
+    # Stops by itself when the launcher is gone, also after Force Quit (SIGKILL).
+    while kill -0 $$ 2>/dev/null; do
         update_ports
         sleep 1
     done
 }
 
 # ---------------------------------------------------------------- first run
+
+# winetricks runs `lipo -archs` on wine. /usr/bin/lipo is an Xcode stub that opens
+# an "install developer tools" dialog on Macs without the Command Line Tools.
+# This Wine is x86_64 only, so a shim gives the answer.
+SHIM="$SUPPORT/shim"
+mkdir -p "$SHIM"
+printf '#!/bin/sh\necho x86_64\n' > "$SHIM/lipo"
+chmod 755 "$SHIM/lipo"
+
+run_winetricks() {
+    PATH="$SHIM:$PATH" WINE64="$WINE" WINETRICKS_LATEST_VERSION_CHECK=disabled \
+        sh "$RES/winetricks" -q "$@" >> "$WINELOG" 2>&1
+}
 
 register_ports() {
     for n in $PORT_SLOTS; do
@@ -138,35 +203,63 @@ register_ports() {
     done
 }
 
+seed_mp_config() {
+    # Answer Mission Planner's two first-start questions in advance, so the
+    # first start does not stop at modal dialogs:
+    #  - Altitude Angel plugin: off (it can be enabled later in Mission Planner)
+    #  - Drone ID plugin: the default tab list (else it asks for a restart)
+    docs_win="$("$WINE" cmd /c 'echo %USERPROFILE%\Documents' 2>/dev/null | tr -d '\r')"
+    docs="$("$WINE" winepath -u "$docs_win" 2>/dev/null | tr -d '\r')"
+    [ -n "$docs" ] || { log "warning: could not find the Documents folder"; return 0; }
+    cfg="$docs/Mission Planner/config.xml"
+    [ -f "$cfg" ] && return 0
+    mkdir -p "$docs/Mission Planner"
+    cat > "$cfg" <<'EOF'
+<?xml version="1.0" encoding="utf-8"?>
+<Config>
+  <AA_CheckEnableAltitudeAngel>False</AA_CheckEnableAltitudeAngel>
+  <tabcontrolactions>tabQuick;tabActions;tabPagemessages;tabActionsSimple;tabPagePreFlight;tabGauges;tabTransponder;tabStatus;tabServo;tabAuxFunction;tabScripts;tabPayload;tabTLogs;tablogbrowse;</tabcontrolactions>
+</Config>
+EOF
+    log "wrote default Mission Planner settings to $cfg"
+}
+
 setup_prefix() {
     log "creating Wine prefix in $WINEPREFIX"
     # Do not install Wine Mono or Gecko. .NET Framework 4.8 replaces Mono.
     WINEDLLOVERRIDES="mscoree=;mshtml=" "$WINE" wineboot --init >> "$WINELOG" 2>&1 || fail "wineboot failed."
     "$WINESERVER" -w
+    # Keep Gecko off permanently, also when a newer Wine updates the prefix.
+    "$WINE" reg add 'HKCU\Software\Wine\DllOverrides' /v mshtml /t REG_SZ /d '' /f >> "$WINELOG" 2>&1
 
     log "installing .NET Framework 4.8 (winetricks dotnet48)"
-    sh "$RES/winetricks" -q dotnet48 >> "$WINELOG" 2>&1 || fail ".NET Framework 4.8 did not install."
-    sh "$RES/winetricks" -q win10 >> "$WINELOG" 2>&1 || log "warning: winetricks win10 failed"
+    run_winetricks dotnet48 || fail ".NET Framework 4.8 did not install."
+    run_winetricks win10 || log "warning: winetricks win10 failed"
 
     register_ports
+    seed_mp_config
     "$WINESERVER" -w
     echo "$BUNDLE_VERSION" > "$STATE/prefix-ok"
     log "prefix ready"
 }
 
-if [ ! -f "$STATE/prefix-ok" ]; then
-    ask "First start: Mission Planner installs Microsoft .NET Framework 4.8 into its own Wine folder. This downloads about 120 MB from Microsoft and takes 5 to 20 minutes. You get a notice when it is done." "Continue" || exit 0
-    notify "Setting up. This takes 5 to 20 minutes."
-    rm -rf "$WINEPREFIX"
+if [ ! -f "$STATE/prefix-ok" ] || [ ! -f "$WINEPREFIX/system.reg" ]; then
+    ask "First start: Mission Planner installs Microsoft .NET Framework 4.8 into its own Wine folder. This downloads about 165 MB from Microsoft and takes 5 to 20 minutes." "Continue" || exit 0
+    [ -d "$WINEPREFIX" ] && "$WINESERVER" -k 2>/dev/null
+    rm -rf "$WINEPREFIX" "$STATE/prefix-ok" "$STATE/mp-version"
+    show "$(printf 'Setting up Mission Planner. This takes 5 to 20 minutes.\n\nYou can close this message. Mission Planner opens when setup is done.\n\nLog files: %s' "$LOGDIR")" 3600
     setup_prefix
-    notify "Setup is done. Mission Planner starts now."
+    show "Setup is done. Mission Planner starts now." 10
 fi
 
 # Copy Mission Planner into the prefix when the bundle is new or updated.
-if [ "$(cat "$STATE/mp-version" 2>/dev/null)" != "$BUNDLE_VERSION" ]; then
+# A fresh copy (not a merge) so files removed in a newer version do not stay.
+if [ "$(cat "$STATE/mp-version" 2>/dev/null)" != "$BUNDLE_VERSION" ] || [ ! -f "$MP_DIR/MissionPlanner.exe" ]; then
     log "copying Mission Planner files into the prefix"
-    mkdir -p "$MP_DIR"
-    /usr/bin/ditto "$RES/MissionPlanner" "$MP_DIR" || fail "Could not copy Mission Planner files."
+    rm -rf "$MP_DIR.new"
+    /usr/bin/ditto "$RES/MissionPlanner" "$MP_DIR.new" || fail "Could not copy Mission Planner files."
+    rm -rf "$MP_DIR"
+    mv "$MP_DIR.new" "$MP_DIR" || fail "Could not install Mission Planner files."
     echo "$BUNDLE_VERSION" > "$STATE/mp-version"
 fi
 
@@ -175,12 +268,22 @@ fi
 update_ports
 port_watcher &
 WATCHER_PID=$!
-trap 'kill $WATCHER_PID 2>/dev/null' EXIT
 
+[ -f "$WINELOG" ] && mv -f "$WINELOG" "$WINELOG.1"
 log "starting MissionPlanner.exe"
 cd "$MP_DIR" || fail "Mission Planner folder is missing."
+STARTED=$(date +%s)
+LOADS_BEFORE=$(grep -c "appload time" "$MP_LOG" 2>/dev/null); LOADS_BEFORE=${LOADS_BEFORE:-0}
 "$WINE" "$MP_DIR/MissionPlanner.exe" "$@" >> "$WINELOG" 2>&1
 STATUS=$?
-log "MissionPlanner.exe exited with $STATUS"
-"$WINESERVER" -k 2>/dev/null
+log "MissionPlanner.exe exited with $STATUS after $(( $(date +%s) - STARTED )) s"
+# A start that ends with an error before the main window loads is a crash. Tell the user.
+LOADS_AFTER=$(grep -c "appload time" "$MP_LOG" 2>/dev/null); LOADS_AFTER=${LOADS_AFTER:-0}
+if [ "$STATUS" -ne 0 ] && [ "$LOADS_AFTER" -le "$LOADS_BEFORE" ]; then
+    "$WINESERVER" -k 2>/dev/null
+    fail "Mission Planner stopped while it was starting (exit code $STATUS)."
+fi
+# Wait for other Windows processes (for example Mission Planner's updater).
+"$WINESERVER" -w
+hide
 exit $STATUS

@@ -24,10 +24,6 @@
 	<string>@VERSION@</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>11.0</string>
-	<key>LSArchitecturePriority</key>
-	<array>
-		<string>x86_64</string>
-	</array>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 </dict>
