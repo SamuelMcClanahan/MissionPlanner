@@ -21,8 +21,8 @@ On Apple Silicon Macs it also uses Rosetta 2 (Apple's Intel translator).
 
 - If Rosetta 2 is not installed, the app asks to install it. macOS asks for your password.
 - The app installs Microsoft .NET Framework 4.8 into its own Wine folder.
-  It downloads about 165 MB from Microsoft. Then it compiles Mission Planner to native
-  code once, so that later starts are faster. This takes 10 to 30 minutes.
+  It downloads about 120 MB from Microsoft. Then it compiles Mission Planner to native
+  code once, so that later starts are faster. This takes 5 to 20 minutes.
   A window with a progress bar shows while setup runs. Mission Planner opens when setup is done.
   Later starts do not do this again. After an app update, the compile step runs again (a few minutes).
 - The app answers Mission Planner's two first-start questions for you: the Altitude Angel
@@ -83,8 +83,8 @@ To reset the app, quit it and delete `~/Library/MissionPlannerWine`. The next st
 `.github/workflows/mac-wine.yml` builds the app:
 
 1. The Windows job builds Mission Planner from this repository.
-2. The macOS job runs `MacWine/build-app.sh`, which puts the Windows build, Wine
-   (Gcenx macOS build, pinned by SHA-256) and winetricks into `Mission Planner.app`.
+2. The macOS job runs `MacWine/build-app.sh`, which puts the Windows build and Wine
+   (Gcenx macOS build, pinned by SHA-256) into `Mission Planner.app`.
 3. The smoke test job installs the app on a GitHub macOS machine (quarantined, without
    the Xcode tools), runs the first start and checks that the Mission Planner main window loads.
 4. If the smoke test passes, the publish job updates the `macwine-latest` prerelease.

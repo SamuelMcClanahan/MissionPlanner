@@ -20,8 +20,6 @@ permissions:
 env:
   WINE_URL: https://github.com/Gcenx/macOS_Wine_builds/releases/download/11.0_1/wine-stable-11.0_1-osx64.tar.xz
   WINE_SHA256: b50dc50ec7f41d58b115a6b685d4d1315ba3c797bd3aa0f49213f2703cb82388
-  WINETRICKS_URL: https://raw.githubusercontent.com/Winetricks/winetricks/20260125/src/winetricks
-  WINETRICKS_SHA256: 431f82fc74000e6c864409f1d8fb495d696c03928808e3e8acffc45179312a7b
 
 jobs:
   windows:
@@ -67,12 +65,10 @@ jobs:
           name: mp-windows
           path: mp-windows
 
-      - name: Download Wine and winetricks
+      - name: Download Wine
         run: |
           curl -fsSL -o wine.tar.xz "$WINE_URL"
           echo "$WINE_SHA256  wine.tar.xz" | shasum -a 256 -c -
-          curl -fsSL -o winetricks "$WINETRICKS_URL"
-          echo "$WINETRICKS_SHA256  winetricks" | shasum -a 256 -c -
 
       - name: Assemble app
         id: asm
@@ -80,7 +76,7 @@ jobs:
           MPV="$(tr -d '\r' < mp-windows/version.txt 2>/dev/null || echo 0)"
           VERSION="${MPV}-$(git rev-parse --short HEAD)"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          bash MacWine/build-app.sh --mp mp-windows --wine wine.tar.xz --winetricks winetricks \
+          bash MacWine/build-app.sh --mp mp-windows --wine wine.tar.xz \
             --version "$VERSION" --out dist --icon mpdesktop150.png
 
       - name: Package

@@ -2,28 +2,26 @@
 # Assembles "Mission Planner.app" (Wine bundle) from:
 #   - a Windows build of Mission Planner (folder with MissionPlanner.exe)
 #   - a macOS Wine build tarball from https://github.com/Gcenx/macOS_Wine_builds
-#   - winetricks
 # Runs on macOS (CI) and on Linux (for a layout check; no icon or signature there).
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 --mp DIR --wine WINE.tar.xz --winetricks FILE --version VERSION --out DIR [--icon PNG]" >&2
+    echo "Usage: $0 --mp DIR --wine WINE.tar.xz --version VERSION --out DIR [--icon PNG]" >&2
     exit 1
 }
 
-MP_SRC="" WINE_TAR="" WINETRICKS="" VERSION="" OUT="" ICON=""
+MP_SRC="" WINE_TAR="" VERSION="" OUT="" ICON=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --mp) MP_SRC="$2"; shift 2 ;;
         --wine) WINE_TAR="$2"; shift 2 ;;
-        --winetricks) WINETRICKS="$2"; shift 2 ;;
         --version) VERSION="$2"; shift 2 ;;
         --out) OUT="$2"; shift 2 ;;
         --icon) ICON="$2"; shift 2 ;;
         *) usage ;;
     esac
 done
-[ -n "$MP_SRC" ] && [ -n "$WINE_TAR" ] && [ -n "$WINETRICKS" ] && [ -n "$VERSION" ] && [ -n "$OUT" ] || usage
+[ -n "$MP_SRC" ] && [ -n "$WINE_TAR" ] && [ -n "$VERSION" ] && [ -n "$OUT" ] || usage
 [ -f "$MP_SRC/MissionPlanner.exe" ] || { echo "No MissionPlanner.exe in $MP_SRC" >&2; exit 1; }
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -38,10 +36,6 @@ echo "== launcher"
 cp "$HERE/launcher.sh" "$APP/Contents/MacOS/MissionPlanner"
 chmod 755 "$APP/Contents/MacOS/MissionPlanner"
 echo "$VERSION" > "$APP/Contents/Resources/bundle-version.txt"
-
-echo "== winetricks"
-cp "$WINETRICKS" "$APP/Contents/Resources/winetricks"
-chmod 755 "$APP/Contents/Resources/winetricks"
 
 echo "== Wine"
 TMP="$(mktemp -d)"

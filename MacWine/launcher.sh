@@ -11,7 +11,7 @@ RES="$CONTENTS/Resources"
 WINE_ROOT="$RES/wine"
 BUNDLE_VERSION="$(cat "$RES/bundle-version.txt" 2>/dev/null || echo unknown)"
 
-# No spaces in these paths: some Wine tools and winetricks handle spaces badly.
+# No spaces in these paths: some Wine tools handle spaces badly.
 SUPPORT="${MPWINE_HOME:-$HOME/Library/MissionPlannerWine}"
 LOGDIR="$HOME/Library/Logs/MissionPlannerWine"
 PORTDIR="$SUPPORT/ports"
@@ -22,7 +22,7 @@ export WINE="$WINE_ROOT/bin/wine"
 export WINESERVER="$WINE_ROOT/bin/wineserver"
 export PATH="$WINE_ROOT/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 export WINEDEBUG="${WINEDEBUG:--all}"
-export W_CACHE="$SUPPORT/cache"
+CACHE="$SUPPORT/cache"
 export LANG="${LANG:-en_US.UTF-8}"
 
 # COM port slots. Each slot is a symlink in $PORTDIR that the port watcher
@@ -33,7 +33,7 @@ PORT_SLOTS="3 4 5 6"
 MP_DIR="$WINEPREFIX/drive_c/Program Files/Mission Planner"
 MP_LOG="$WINEPREFIX/drive_c/ProgramData/Mission Planner/MissionPlanner.log"
 
-mkdir -p "$SUPPORT" "$LOGDIR" "$PORTDIR" "$STATE" "$W_CACHE"
+mkdir -p "$SUPPORT" "$LOGDIR" "$PORTDIR" "$STATE" "$CACHE"
 LOG="$LOGDIR/launcher.log"
 WINELOG="$LOGDIR/wine.log"
 
@@ -185,19 +185,6 @@ port_watcher() {
 
 # ---------------------------------------------------------------- first run
 
-# winetricks runs `lipo -archs` on wine. /usr/bin/lipo is an Xcode stub that opens
-# an "install developer tools" dialog on Macs without the Command Line Tools.
-# This Wine is x86_64 only, so a shim gives the answer.
-SHIM="$SUPPORT/shim"
-mkdir -p "$SHIM"
-printf '#!/bin/sh\necho x86_64\n' > "$SHIM/lipo"
-chmod 755 "$SHIM/lipo"
-
-run_winetricks() {
-    PATH="$SHIM:$PATH" WINE64="$WINE" WINETRICKS_LATEST_VERSION_CHECK=disabled \
-        sh "$RES/winetricks" -q "$@" >> "$WINELOG" 2>&1
-}
-
 winedbg_watchdog() {
     # WineHQ bug 57998: on macOS a sub-installer of .NET 4.0 can crash, and Wine's
     # crash handler (winedbg --auto) then waits forever. winedbg is disabled in
@@ -219,32 +206,32 @@ apply_settings() {
     # All Wine settings in one registry import.
     reg="$SUPPORT/settings.reg"
     {
-        echo 'REGEDIT4'
-        echo
-        echo '[HKEY_CURRENT_USER\Software\Wine\DllOverrides]'
-        echo '"mshtml"=""'                # no Gecko download dialog
-        echo '"winedbg.exe"=""'           # a crash ends the program (bug 57998)
-        echo '"winemenubuilder.exe"=""'   # no menu or file association entries
-        echo
-        echo '[HKEY_CURRENT_USER\Software\Wine\WineDbg]'
-        echo '"ShowCrashDialog"=dword:00000000'
-        echo
-        echo '[HKEY_CURRENT_USER\Software\Wine\Mac Driver]'
-        echo '"LeftCommandIsCtrl"="y"'    # Cmd+C, Cmd+V, Cmd+A work like Ctrl
-        echo '"RightCommandIsCtrl"="y"'
-        echo '"LeftOptionIsAlt"="y"'      # right Option still types accents
-        echo '"UsePreciseScrolling"="n"'  # trackpad map zoom in normal steps
-        echo
+        printf '%s\n' 'REGEDIT4'
+        printf '\n'
+        printf '%s\n' '[HKEY_CURRENT_USER\Software\Wine\DllOverrides]'
+        printf '%s\n' '"mshtml"=""'                # no Gecko download dialog
+        printf '%s\n' '"winedbg.exe"=""'           # a crash ends the program (bug 57998)
+        printf '%s\n' '"winemenubuilder.exe"=""'   # no menu or file association entries
+        printf '\n'
+        printf '%s\n' '[HKEY_CURRENT_USER\Software\Wine\WineDbg]'
+        printf '%s\n' '"ShowCrashDialog"=dword:00000000'
+        printf '\n'
+        printf '%s\n' '[HKEY_CURRENT_USER\Software\Wine\Mac Driver]'
+        printf '%s\n' '"LeftCommandIsCtrl"="y"'    # Cmd+C, Cmd+V, Cmd+A work like Ctrl
+        printf '%s\n' '"RightCommandIsCtrl"="y"'
+        printf '%s\n' '"LeftOptionIsAlt"="y"'      # right Option still types accents
+        printf '%s\n' '"UsePreciseScrolling"="n"'  # trackpad map zoom in normal steps
+        printf '\n'
         # .NET background compiler services: they start compiling in the
         # middle of a session. Mission Planner is compiled once at setup (ngen).
-        echo '[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\clr_optimization_v4.0.30319_32]'
-        echo '"Start"=dword:00000004'
-        echo '[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\clr_optimization_v4.0.30319_64]'
-        echo '"Start"=dword:00000004'
-        echo
-        echo '[HKEY_LOCAL_MACHINE\Software\Wine\Ports]'
+        printf '%s\n' '[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\clr_optimization_v4.0.30319_32]'
+        printf '%s\n' '"Start"=dword:00000004'
+        printf '%s\n' '[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\clr_optimization_v4.0.30319_64]'
+        printf '%s\n' '"Start"=dword:00000004'
+        printf '\n'
+        printf '%s\n' '[HKEY_LOCAL_MACHINE\Software\Wine\Ports]'
         for n in $PORT_SLOTS; do
-            echo "\"COM$n\"=\"$PORTDIR/com$n\""
+            printf '"COM%s"="%s"\n' "$n" "$PORTDIR/com$n"
         done
     } > "$reg"
     "$WINE" regedit /S "Z:$reg" >> "$WINELOG" 2>&1 || fail "Could not write the Wine settings."
@@ -279,13 +266,77 @@ progress_end() {
 
 # ---------------------------------------------------------------- setup
 
+DOTNET40_URL="https://download.microsoft.com/download/9/5/A/95A9616B-7A37-4AF6-BC36-D6EA96C8DAAE/dotNetFx40_Full_x86_x64.exe"
+DOTNET40_SHA256="65e064258f2e418816b304f646ff9e87af101e4c9552ab064bb74d281c38659f"
+DOTNET48_URL="https://download.visualstudio.microsoft.com/download/pr/7afca223-55d2-470a-8edc-6a1739ae3252/abd170b4b0ec15ad0222a809b761a036/ndp48-x86-x64-allos-enu.exe"
+DOTNET48_SHA256="95889d6de3f2070c07790ad6cf2000d33d9a1bdfc6a381725ab82ab1c314fd53"
+
+download() {
+    # download URL SHA256 FILE -> keeps a verified copy in the cache
+    if [ -f "$3" ] && echo "$2  $3" | /usr/bin/shasum -a 256 -c - >/dev/null 2>&1; then return 0; fi
+    mkdir -p "$(dirname "$3")"
+    /usr/bin/curl -fL --retry 3 -o "$3.part" "$1" >> "$WINELOG" 2>&1 || return 1
+    echo "$2  $3.part" | /usr/bin/shasum -a 256 -c - >> "$WINELOG" 2>&1 || { rm -f "$3.part"; return 1; }
+    mv -f "$3.part" "$3"
+}
+
 install_dotnet() {
+    # Installs .NET Framework 4.8 without running the .NET 4.0 installer.
+    # winetricks dotnet48 runs the 4.0 installer first, and on macOS that hangs
+    # (WineHQ bug 57998). The 4.0 step is only needed for mscoree.dll and
+    # mscorees.dll (the .NET 4.8 installer does not install them), so they are
+    # taken from the 4.0 package directly. This is also about 2.5x faster.
+    f40="$CACHE/dotnet40/dotNetFx40_Full_x86_x64.exe"
+    f48="$CACHE/dotnet48/ndp48-x86-x64-allos-enu.exe"
+    download "$DOTNET40_URL" "$DOTNET40_SHA256" "$f40" || return 1
+    download "$DOTNET48_URL" "$DOTNET48_SHA256" "$f48" || return 1
+    progress 25 "Installing Microsoft .NET Framework 4.8 (the longest step)"
+
+    win="$WINEPREFIX/drive_c/windows"
+    tmp="$WINEPREFIX/drive_c/mpwine-dn40"
+    rm -rf "$tmp"
+    mkdir -p "$tmp/core"
+    # Extract the 4.0 package (no install), then its core cabinet.
+    (cd "$(dirname "$f40")" && "$WINE" "$(basename "$f40")" '/x:C:\mpwine-dn40' /q) >> "$WINELOG" 2>&1
+    "$WINE" extrac32 /Y /E /L 'C:\mpwine-dn40\core' 'C:\mpwine-dn40\netfx_Core.mzz' >> "$WINELOG" 2>&1
+    for f in _003_mscoree_dll_amd64 _003_mscoree_dll_x86 _017_mscorees_dll_amd64 _017_mscorees_dll_x86; do
+        [ -f "$tmp/core/$f" ] || { log "missing $f in the .NET 4.0 package"; return 1; }
+    done
+    cp "$tmp/core/_003_mscoree_dll_amd64" "$win/system32/mscoree.dll"
+    cp "$tmp/core/_003_mscoree_dll_x86" "$win/syswow64/mscoree.dll"
+    cp "$tmp/core/_017_mscorees_dll_amd64" "$win/system32/mscorees.dll"
+    cp "$tmp/core/_017_mscorees_dll_x86" "$win/syswow64/mscorees.dll"
+    rm -rf "$tmp"
+    {
+        printf '%s\n' 'REGEDIT4'
+        printf '\n'
+        printf '%s\n' '[HKEY_LOCAL_MACHINE\Software\Microsoft\.NETFramework]'
+        printf '%s\n' '"InstallRoot"="C:\\windows\\Microsoft.NET\\Framework64\\"'
+        printf '%s\n' '[HKEY_LOCAL_MACHINE\Software\Wow6432Node\Microsoft\.NETFramework]'
+        printf '%s\n' '"InstallRoot"="C:\\windows\\Microsoft.NET\\Framework\\"'
+        printf '%s\n' '[HKEY_CURRENT_USER\Software\Wine\DllOverrides]'
+        printf '%s\n' '"mscoree"="native"'
+    } > "$SUPPORT/dotnet.reg"
+    "$WINE" regedit /S "Z:$SUPPORT/dotnet.reg" >> "$WINELOG" 2>&1 || return 1
+    "$WINE" winecfg -v win7 >> "$WINELOG" 2>&1   # the .NET 4.8 installer wants Windows 7 or later
+
     winedbg_watchdog &
     watchdog_pid=$!
-    run_winetricks dotnet48
+    (cd "$(dirname "$f48")" && WINEDLLOVERRIDES=fusion=b "$WINE" "$(basename "$f48")" /sfxlang:1027 /q /norestart) >> "$WINELOG" 2>&1
     rc=$?
     kill "$watchdog_pid" 2>/dev/null
-    return $rc
+    "$WINESERVER" -w
+    log ".NET 4.8 installer exit code $rc"
+    [ -f "$win/Microsoft.NET/Framework64/v4.0.30319/clr.dll" ] || return 1
+    # The .NET 4.0 installer also registers the symbol writer COM server. Without
+    # it, Mission Planner cannot compile its .cs plugins (17 of 27 do not load).
+    {
+        "$WINE" regsvr32 /s 'C:\windows\Microsoft.NET\Framework64\v4.0.30319\diasymreader.dll'
+        "$WINE" 'C:\windows\syswow64\regsvr32.exe' /s 'C:\windows\Microsoft.NET\Framework\v4.0.30319\diasymreader.dll'
+        "$WINE" winecfg -v win10
+    } >> "$WINELOG" 2>&1
+    # Exit codes 0 and 3010 (reboot required) are success.
+    [ "$rc" = 0 ] || [ "$rc" = 3010 ]
 }
 
 setup_prefix() {
@@ -296,10 +347,9 @@ setup_prefix() {
     "$WINESERVER" -w
     apply_settings
 
-    progress 8 "Downloading and installing Microsoft .NET Framework 4.8 (the longest step)"
+    progress 8 "Downloading Microsoft .NET Framework 4.8 (about 120 MB)"
     log "installing .NET Framework 4.8"
     install_dotnet || fail ".NET Framework 4.8 did not install."
-    run_winetricks win10 || log "warning: winetricks win10 failed"
     apply_settings
     echo "$BUNDLE_VERSION" > "$STATE/prefix-ok"
     log "prefix ready"
@@ -334,10 +384,10 @@ NEED_MP=0
 if [ "$(cat "$STATE/mp-version" 2>/dev/null)" != "$BUNDLE_VERSION" ] || [ ! -f "$MP_DIR/MissionPlanner.exe" ]; then NEED_MP=1; fi
 
 if [ "$NEED_SETUP" = 1 ]; then
-    ask "First start: Mission Planner installs Microsoft .NET Framework 4.8 into its own Wine folder. This downloads about 165 MB from Microsoft and takes 10 to 30 minutes." "Continue" || exit 0
+    ask "First start: Mission Planner installs Microsoft .NET Framework 4.8 into its own Wine folder. This downloads about 120 MB from Microsoft and takes 5 to 20 minutes." "Continue" || exit 0
     [ -d "$WINEPREFIX" ] && "$WINESERVER" -k 2>/dev/null
     rm -rf "$WINEPREFIX" "$STATE/prefix-ok" "$STATE/mp-version"
-    progress_start "Setting up Mission Planner. This takes 10 to 30 minutes."
+    progress_start "Setting up Mission Planner. This takes 5 to 20 minutes."
     setup_prefix
     install_mp
     progress_end
