@@ -101,10 +101,15 @@ jobs:
             dist/checksums.txt
 
   smoke-test:
-    name: Smoke test on macOS
+    name: Smoke test on macOS (${{ matrix.replica }})
     needs: bundle
     runs-on: macos-15
     timeout-minutes: 60
+    # Three machines at the same time: a start that stops only sometimes shows up more often.
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [1, 2, 3]
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -223,7 +228,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: smoke-test-results
+          name: smoke-test-results-${{ matrix.replica }}
           path: out
 
   publish:

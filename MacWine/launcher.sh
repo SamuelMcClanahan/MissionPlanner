@@ -195,6 +195,31 @@ port_watcher() {
 
 # ---------------------------------------------------------------- first run
 
+wine_wait() {
+    # Waits until all Windows processes of the prefix end, at most $1 seconds,
+    # then stops the rest. On macOS a conhost.exe or a service can stay after the
+    # .NET installer ends, and "wineserver -w" alone then waits forever.
+    # wineserver -k saves the registry before it exits.
+    "$WINESERVER" -w &
+    ww_pid=$!
+    ww_n=0
+    while kill -0 "$ww_pid" 2>/dev/null; do
+        if [ "$ww_n" -ge "$1" ]; then
+            # shellcheck disable=SC2009  # ps prints the full command lines on macOS and Linux
+            log "Windows processes still running after $1 s, stopping them: $(ps ax -o pid= -o command= | grep -i '\.exe' | grep -v grep | tr -s ' \n' ' ' | cut -c1-400)"
+            "$WINESERVER" -k 2>/dev/null
+            ww_n=0
+            while kill -0 "$ww_pid" 2>/dev/null && [ "$ww_n" -lt 20 ]; do sleep 1; ww_n=$((ww_n + 1)); done
+            kill "$ww_pid" 2>/dev/null
+            break
+        fi
+        sleep 1
+        ww_n=$((ww_n + 1))
+    done
+    wait "$ww_pid" 2>/dev/null
+    return 0
+}
+
 winedbg_watchdog() {
     # WineHQ bug 57998: on macOS a sub-installer of .NET 4.0 can crash, and Wine's
     # crash handler (winedbg --auto) then waits forever. winedbg is disabled in
@@ -268,7 +293,7 @@ apply_settings() {
     "$WINE" regedit /S "Z:$reg" >> "$WINELOG" 2>&1
     # regedit always exits with 0: check that a value arrived.
     "$WINE" reg query 'HKLM\Software\Wine\Ports' /v COM3 >> "$WINELOG" 2>&1 || fail "Could not write the Wine settings."
-    "$WINESERVER" -w
+    wine_wait 60
 }
 
 # ---------------------------------------------------------------- progress window
@@ -381,7 +406,7 @@ install_dotnet() {
     (cd "$(dirname "$f48")" && WINEDLLOVERRIDES=fusion=b "$WINE" "$(basename "$f48")" /sfxlang:1027 /q /norestart) >> "$WINELOG" 2>&1
     rc=$?
     kill "$watchdog_pid" "$guard_pid" 2>/dev/null
-    "$WINESERVER" -w
+    wine_wait 120
     log ".NET 4.8 installer exit code $rc"
     [ -f "$win/Microsoft.NET/Framework64/v4.0.30319/clr.dll" ] || return 1
     # The .NET 4.0 installer also registers the symbol writer COM server. Without
@@ -403,7 +428,7 @@ setup_prefix() {
     progress 2 "Creating the Wine folder"
     # Do not install Wine Mono or Gecko. .NET Framework 4.8 replaces Mono.
     WINEDLLOVERRIDES="mscoree=;mshtml=" "$WINE" wineboot --init >> "$WINELOG" 2>&1 || fail "wineboot failed."
-    "$WINESERVER" -w
+    wine_wait 120
     apply_settings
 
     progress 8 "Downloading Microsoft .NET Framework 4.8 (about 120 MB)"
@@ -431,7 +456,7 @@ install_mp() {
     "$WINE" 'C:\windows\Microsoft.NET\Framework64\v4.0.30319\ngen.exe' install \
         'C:\Program Files\Mission Planner\MissionPlanner.exe' /nologo >> "$WINELOG" 2>&1 \
         || log "warning: ngen returned $? (Mission Planner still works, it starts slower)"
-    "$WINESERVER" -w
+    wine_wait 120
     apply_settings
     echo "$BUNDLE_VERSION" > "$STATE/mp-version"
     progress 100 "Done"
@@ -468,7 +493,8 @@ log "starting MissionPlanner.exe"
 cd "$MP_DIR" || fail "Mission Planner folder is missing."
 STARTED=$(date +%s)
 START_TS="$(date '+%Y-%m-%d %H:%M:%S')"
-"$WINE" "$MP_DIR/MissionPlanner.exe" "$@" >> "$WINELOG" 2>&1
+# stdin is not a terminal, so Wine starts no console for Mission Planner.
+"$WINE" "$MP_DIR/MissionPlanner.exe" "$@" < /dev/null >> "$WINELOG" 2>&1
 STATUS=$?
 log "MissionPlanner.exe exited with $STATUS after $(( $(date +%s) - STARTED )) s"
 # A start that ends with an error before the main window loads is a crash. Tell the user.
@@ -483,6 +509,7 @@ if [ "$STATUS" -ne 0 ] && ! loaded_since_start; then
     fail "Mission Planner stopped while it was starting (exit code $STATUS)."
 fi
 # Wait for other Windows processes (for example Mission Planner's updater).
-"$WINESERVER" -w
+# A process that stays would keep the launcher (and its lock) alive.
+wine_wait 60
 hide
 exit $STATUS

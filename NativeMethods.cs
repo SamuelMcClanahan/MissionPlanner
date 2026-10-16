@@ -27,6 +27,26 @@ namespace MissionPlanner
         [DllImport("kernel32.dll")]
         public static extern uint SetThreadExecutionState(uint esFlags);
 
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+        static extern IntPtr GetModuleHandle(string lpModuleName);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Ansi)]
+        static extern IntPtr GetProcAddress(IntPtr hModule, string lpProcName);
+
+        // true when running in Wine (for example the macOS Wine app bundle)
+        public static bool IsWine()
+        {
+            try
+            {
+                var ntdll = GetModuleHandle("ntdll.dll");
+                return ntdll != IntPtr.Zero && GetProcAddress(ntdll, "wine_get_version") != IntPtr.Zero;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         public const uint ES_CONTINUOUS = 0x80000000;
         public const uint ES_SYSTEM_REQUIRED = 0x00000001;
 

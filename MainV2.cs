@@ -856,7 +856,10 @@ namespace MissionPlanner
 
             try
             {
-                log.Debug(Process.GetCurrentProcess().Modules.ToJSON());
+                // debug output only. In Wine, listing the modules of the own process takes
+                // thousands of wineserver requests (seconds on macOS), so skip it there.
+                if (!NativeMethods.IsWine())
+                    log.Debug(Process.GetCurrentProcess().Modules.ToJSON());
             }
             catch
             {

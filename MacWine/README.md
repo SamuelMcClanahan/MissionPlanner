@@ -94,6 +94,7 @@ This also deletes the map cache and elevation data. Your settings and logs in Do
 1. The Windows job builds Mission Planner from this repository.
 2. The macOS job runs `MacWine/build-app.sh`, which puts the Windows build and Wine
    (Gcenx macOS build, pinned by SHA-256) into `Mission Planner.app`.
-3. The smoke test job installs the app on a GitHub macOS machine (quarantined, without
-   the Xcode tools), runs the first start and checks that the Mission Planner main window loads.
+3. The smoke test job installs the app on three GitHub macOS machines at the same time
+   (quarantined, without the Xcode tools). It runs the first start and a second start, and
+   checks that the Mission Planner main window loads each time.
 4. If the smoke test passes, the publish job updates the `macwine-latest` prerelease.
