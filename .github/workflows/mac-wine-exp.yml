@@ -1,0 +1,151 @@
+name: macOS Wine experiment (temporary)
+# Temporary: find why Mission Planner stops after "TTS: init" when the app is
+# started through the compiled main executable (stub.c). Uses the app that run
+# 38965430257 built. Remove this file when the cause is known.
+
+on:
+  push:
+    branches: ['claude/**']
+    paths: ['.github/workflows/mac-wine-exp.yml']
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  exp:
+    runs-on: macos-15
+    timeout-minutes: 80
+    steps:
+      - name: Get the app from run 38965430257
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 38965430257 -n MissionPlanner-macOS-wine -D dist -R "$GITHUB_REPOSITORY"
+          ditto -x -k dist/MissionPlanner-macOS-wine.zip /Applications
+          xattr -r -w com.apple.quarantine "0081;00000000;Safari;" "/Applications/Mission Planner.app"
+          if ! arch -x86_64 /usr/bin/true 2>/dev/null; then
+            sudo softwareupdate --install-rosetta --agree-to-license
+          fi
+          file "/Applications/Mission Planner.app/Contents/MacOS/MissionPlanner"
+
+      - name: Trials
+        run: |
+          mkdir -p out
+          APP="/Applications/Mission Planner.app"
+          export WINEPREFIX="$HOME/Library/MissionPlannerWine/prefix"
+          W="$APP/Contents/Resources/wine/bin/wine"
+          MPLOG="$WINEPREFIX/drive_c/ProgramData/Mission Planner/MissionPlanner.log"
+          count() { cat "$MPLOG.1" "$MPLOG" 2>/dev/null | grep -c "appload time" || true; }
+          tmo() { perl -e 'alarm shift; exec @ARGV' "$@"; }
+          stop_all() {
+            pkill -f 'Resources/launcher.sh' || true
+            pkill -f 'Contents/MacOS/MissionPlanner' || true
+            pkill -f MissionPlanner.exe || true
+            "$APP/Contents/Resources/wine/bin/wineserver" -k || true
+            sleep 3
+          }
+          diag() {
+            n=$1
+            ps -axo pid,ppid,pgid,stat,etime,command | grep -E -i 'wine|mission|launcher|\.exe|caffeinate|osascript' | grep -v grep | cut -c1-220 > "out/$n-ps.txt" || true
+            screencapture -x "out/$n.png" || true
+            WINEDEBUG=-all WINEDLLOVERRIDES="winedbg.exe=b" tmo 60 "$W" winedbg --command "info process" > "out/$n-procs.txt" 2>&1 || true
+            pid=$(grep -i 'MissionPlanner.exe' "out/$n-procs.txt" | grep -o -E '[0-9a-fA-F]{8}' | head -1)
+            printf 'info threads\nbt all\ndetach\n' > "$WINEPREFIX/drive_c/bt.txt"
+            if [ -n "$pid" ]; then
+              WINEDEBUG=-all WINEDLLOVERRIDES="winedbg.exe=b" tmo 180 "$W" winedbg --file 'C:\bt.txt' "0x$pid" > "out/$n-bt.txt" 2>&1 || true
+            fi
+            log show --last 4m --style compact --predicate 'subsystem == "com.apple.TCC" OR process == "tccd"' 2>/dev/null | tail -80 > "out/$n-tcc.txt" || true
+            tail -5 "$MPLOG" | cut -c1-200 > "out/$n-mplog.txt" || true
+          }
+          trial() {
+            n=$1; shift
+            stop_all
+            N=$(count); S=$(date +%s)
+            echo "== $n: $*"
+            "$@" &
+            for i in $(seq 1 30); do
+              sleep 5
+              if [ "$(count)" -gt "$N" ]; then
+                echo "RESULT $n PASS $(( $(date +%s) - S )) s" | tee -a out/results.txt; return 0
+              fi
+            done
+            echo "RESULT $n FAIL" | tee -a out/results.txt
+            diag "$n"
+          }
+
+          # Setup without the stub: bash runs the launcher directly.
+          export MPWINE_NONINTERACTIVE=1
+          S=$(date +%s)
+          /bin/bash "$APP/Contents/Resources/launcher.sh" &
+          for i in $(seq 1 150); do
+            sleep 10
+            if [ "$(count)" -gt 0 ]; then break; fi
+            if ! pgrep -f 'Resources/launcher.sh' >/dev/null; then echo "launcher exited"; break; fi
+          done
+          if [ "$(count)" -gt 0 ]; then
+            echo "RESULT setup-bash PASS $(( $(date +%s) - S )) s" | tee -a out/results.txt
+          else
+            echo "RESULT setup-bash FAIL" | tee -a out/results.txt; diag setup-bash
+          fi
+
+          trial t1-stub "$APP/Contents/MacOS/MissionPlanner"
+          trial t2-bash /bin/bash "$APP/Contents/Resources/launcher.sh"
+          trial t3-bash-sigint-default perl -e '$SIG{INT}="DEFAULT"; $SIG{QUIT}="DEFAULT"; exec @ARGV' /bin/bash "$APP/Contents/Resources/launcher.sh"
+          trial t4-open open "$APP"
+          trial t5-wine-direct sh -c '"$0" "$1" > out/t5-wine.log 2>&1' "$W" "$WINEPREFIX/drive_c/Program Files/Mission Planner/MissionPlanner.exe"
+
+          # Stub variant: keep signals that the parent ignores ignored.
+          cat > stub2.c <<'EOF'
+          #include <errno.h>
+          #include <libgen.h>
+          #include <limits.h>
+          #include <signal.h>
+          #include <spawn.h>
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <string.h>
+          #include <sys/wait.h>
+          #include <unistd.h>
+          #include <mach-o/dyld.h>
+          extern char **environ;
+          static pid_t child = -1;
+          static void fwd(int s) { if (child > 0) kill(child, s); }
+          static void keep(int s) { struct sigaction o; if (sigaction(s, NULL, &o) == 0 && o.sa_handler == SIG_IGN) return; signal(s, fwd); }
+          int main(int argc, char *argv[]) {
+            char raw[PATH_MAX], exe[PATH_MAX], d[PATH_MAX], c[PATH_MAX], script[PATH_MAX]; uint32_t sz = sizeof(raw);
+            if (_NSGetExecutablePath(raw, &sz) != 0 || !realpath(raw, exe)) return 1;
+            strcpy(d, exe); strcpy(c, dirname(d)); snprintf(script, sizeof(script), "%s/Resources/launcher.sh", dirname(c));
+            char **a = calloc(argc + 2, sizeof(char *)); a[0] = "/bin/bash"; a[1] = script;
+            for (int i = 1; i < argc; i++) a[i + 1] = argv[i];
+            keep(SIGTERM); keep(SIGINT); keep(SIGHUP);
+            if (posix_spawn(&child, "/bin/bash", NULL, NULL, a, environ) != 0) return 1;
+            int st; while (waitpid(child, &st, 0) < 0) if (errno != EINTR) return 1;
+            return WIFEXITED(st) ? WEXITSTATUS(st) : 1;
+          }
+          EOF
+          clang -O2 -arch arm64 -arch x86_64 -mmacosx-version-min=11.0 -o stub2 stub2.c
+          cp stub2 "$APP/Contents/MacOS/MissionPlanner"
+          codesign --force --sign - "$APP" || echo "codesign failed"
+          trial t6-stub2 "$APP/Contents/MacOS/MissionPlanner"
+          trial t7-stub2-open open "$APP"
+          # A main executable that is a shell script again (as in the passing build).
+          printf '#!/bin/bash\nexec /bin/bash "$(dirname "$(dirname "$0")")/Resources/launcher.sh" "$@"\n' > "$APP/Contents/MacOS/MissionPlanner"
+          chmod 755 "$APP/Contents/MacOS/MissionPlanner"
+          codesign --force --sign - "$APP" || true
+          trial t8-script "$APP/Contents/MacOS/MissionPlanner"
+          stop_all
+          cat out/results.txt
+
+      - name: Collect
+        if: always()
+        run: |
+          mkdir -p out
+          cp -R ~/Library/Logs/MissionPlannerWine out/ 2>/dev/null || true
+          cp "$HOME/Library/MissionPlannerWine/prefix/drive_c/ProgramData/Mission Planner/MissionPlanner.log" out/ 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: exp-results
+          path: out
