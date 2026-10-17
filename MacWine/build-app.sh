@@ -2,6 +2,7 @@
 # Assembles "Mission Planner.app" (Wine bundle) from:
 #   - a Windows build of Mission Planner (folder with MissionPlanner.exe)
 #   - a macOS Wine build tarball from https://github.com/Gcenx/macOS_Wine_builds
+#     (the pinned 11.0_1 build: patch-wineserver.py stops the build for another one)
 # Runs on macOS (CI) and on Linux (for a layout check; no icon or signature there).
 set -euo pipefail
 

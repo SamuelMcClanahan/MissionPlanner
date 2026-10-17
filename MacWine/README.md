@@ -99,7 +99,9 @@ This also deletes the map cache and elevation data. Your settings and logs in Do
    server crashed when a program opened a file on a file system with a device number above
    0x7fffffff. The device number of `/dev` is different on each Mac and looks random (in the CI
    tests, about 1 machine in 4 had such a number), and Mission Planner opens `/dev` when it
-   lists serial ports.
+   lists serial ports. The patch is only for the pinned Wine 11.0_1 build: with another Wine
+   version the build stops at this step. Then check whether the bug is still in that version
+   (`server/fd.c`, `get_device()`), and update or remove the patch.
 3. The smoke test job installs the app on three GitHub macOS machines at the same time
    (quarantined, without the Xcode tools). It runs the first start and a second start, and
    checks that the Mission Planner main window loads each time.
