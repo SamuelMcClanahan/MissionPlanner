@@ -39,6 +39,7 @@ On Apple Silicon Macs it also uses Rosetta 2 (Apple's Intel translator).
 - In Mission Planner, select **COM3** (the first USB serial device) and click **Connect**.
   A second USB serial device becomes COM4, and so on, up to COM6.
   Mission Planner always lists COM3 to COM6, also when nothing is connected.
+  It can also list names that start with `/dev/`. Do not select them: they do not work in Wine.
 - You can connect the flight controller before or after you start the app.
 
 ## Using the app
@@ -94,6 +95,11 @@ This also deletes the map cache and elevation data. Your settings and logs in Do
 1. The Windows job builds Mission Planner from this repository.
 2. The macOS job runs `MacWine/build-app.sh`, which puts the Windows build and Wine
    (Gcenx macOS build, pinned by SHA-256) into `Mission Planner.app`.
+   It also patches one bug in the Wine server (`MacWine/patch-wineserver.py`): on macOS the
+   server crashed when a program opened a file on a file system with a device number above
+   0x7fffffff. The device number of `/dev` is different on each Mac and looks random (in the CI
+   tests, about 1 machine in 4 had such a number), and Mission Planner opens `/dev` when it
+   lists serial ports.
 3. The smoke test job installs the app on three GitHub macOS machines at the same time
    (quarantined, without the Xcode tools). It runs the first start and a second start, and
    checks that the Mission Planner main window loads each time.

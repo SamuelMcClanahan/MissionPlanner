@@ -125,6 +125,15 @@ jobs:
             sudo softwareupdate --install-rosetta --agree-to-license
           fi
           arch -x86_64 /usr/bin/true && echo "Rosetta OK"
+          # devfs gets a random device number at each boot. When its top bit is set,
+          # the original Wine 11 wineserver crashes as soon as Mission Planner lists
+          # serial ports (see MacWine/patch-wineserver.py). Say which case this is.
+          d=$(stat -f %d /dev)
+          if [ "$d" -lt 0 ] || [ "$d" -ge 2147483648 ]; then
+            echo "devfs device number $d: negative as dev_t, this run tests the wineserver patch"
+          else
+            echo "devfs device number $d: positive as dev_t"
+          fi
           # Helpers for the start steps.
           cat > "$RUNNER_TEMP/smoke-lib.sh" <<'EOF'
           APP="/Applications/Mission Planner.app"
