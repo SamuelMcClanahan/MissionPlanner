@@ -112,7 +112,8 @@ cleanup() {
 if ! mkdir "$LOCK" 2>/dev/null; then
     other="$(cat "$LOCK/pid" 2>/dev/null)"
     # The PID must still be a launcher (after a crash or reboot it can be reused).
-    if [ -n "$other" ] && ps -p "$other" -o command= 2>/dev/null | grep -q 'Resources/launcher.sh'; then
+    # Contents/MacOS/MissionPlanner: a launcher of a bundle from before the compiled main executable.
+    if [ -n "$other" ] && ps -p "$other" -o command= 2>/dev/null | grep -q -e 'Resources/launcher.sh' -e 'Contents/MacOS/MissionPlanner'; then
         dialog "Mission Planner is already running or is still setting up."
         exit 0
     fi
@@ -500,16 +501,20 @@ log "MissionPlanner.exe exited with $STATUS after $(( $(date +%s) - STARTED )) s
 # A start that ends with an error before the main window loads is a crash. Tell the user.
 loaded_since_start() {
     # Did the main window load in this run? Mission Planner's log rolls over at
-    # 1 MB into MissionPlanner.log.1, so read both and compare timestamps.
-    cat "$MP_LOG.1" "$MP_LOG" 2>/dev/null | grep "appload time" | cut -c1-19 \
+    # 1 MB (MissionPlanner.log.1, .2, ...) and at midnight (MissionPlanner.log.DATE),
+    # so read all of them and compare timestamps.
+    cat "$MP_LOG"* 2>/dev/null | grep "appload time" | cut -c1-19 \
         | awk -v t="$START_TS" '$0 >= t { found = 1 } END { exit !found }'
 }
 if [ "$STATUS" -ne 0 ] && ! loaded_since_start; then
     "$WINESERVER" -k 2>/dev/null
     fail "Mission Planner stopped while it was starting (exit code $STATUS)."
 fi
-# Wait for other Windows processes (for example Mission Planner's updater).
-# A process that stays would keep the launcher (and its lock) alive.
+# Mission Planner's updater ends Mission Planner, then Updater.exe starts the new
+# version in the same Wine session. Wait for them without a time limit (the port
+# watcher and the lock stay active). Then wait at most 60 s for other Windows
+# processes: one that stays would keep the launcher and its lock alive.
+while pgrep -f 'Mission Planner.(MissionPlanner|Updater)\.exe' >/dev/null; do sleep 2; done
 wine_wait 60
 hide
 exit $STATUS

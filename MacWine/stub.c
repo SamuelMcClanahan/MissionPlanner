@@ -33,6 +33,16 @@ static void forward_signal(int sig)
         kill(child, sig);
 }
 
+/* Pass the signal on to the launcher. A signal that the parent ignores (for
+ * example SIGHUP under nohup) stays ignored, also for the launcher. */
+static void forward(int sig)
+{
+    struct sigaction old;
+    if (sigaction(sig, NULL, &old) == 0 && old.sa_handler == SIG_IGN)
+        return;
+    signal(sig, forward_signal);
+}
+
 static int executable_path(char *buf, size_t len)
 {
 #ifdef __APPLE__
@@ -74,9 +84,9 @@ int main(int argc, char *argv[])
         args[i + 1] = argv[i];
 
     /* Pass quit and terminate requests on to the launcher. */
-    signal(SIGTERM, forward_signal);
-    signal(SIGINT, forward_signal);
-    signal(SIGHUP, forward_signal);
+    forward(SIGTERM);
+    forward(SIGINT);
+    forward(SIGHUP);
 
     int err = posix_spawn(&child, "/bin/bash", NULL, NULL, args, environ);
     if (err != 0) {

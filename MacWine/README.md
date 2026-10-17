@@ -29,7 +29,7 @@ On Apple Silicon Macs it also uses Rosetta 2 (Apple's Intel translator).
 - The app answers Mission Planner's two first-start questions for you: the Altitude Angel
   plugin is off (turn it on later in Mission Planner if you want it), and the Drone ID tab is on.
 - macOS can ask whether Mission Planner may use your Documents folder.
-  Click **Allow**: Mission Planner keeps its logs, parameters and maps there.
+  Click **Allow**: Mission Planner keeps its settings and logs there.
 - macOS can ask whether Mission Planner may find devices on local networks.
   Click **Allow** if you use UDP or Wi-Fi telemetry. USB does not need it.
 
