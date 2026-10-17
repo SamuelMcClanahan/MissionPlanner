@@ -57,6 +57,13 @@ WINE_APP="$(find "$TMP" -maxdepth 1 -name '*.app' | head -1)"
 mv "$WINE_APP/Contents/Resources/wine" "$APP/Contents/Resources/wine"
 # Wine Mono and Gecko are not used: .NET Framework 4.8 is installed on first start.
 rm -rf "$APP/Contents/Resources/wine/share/wine/mono" "$APP/Contents/Resources/wine/share/wine/gecko"
+# Fix a wineserver crash on file systems with a negative device number (see
+# patch-wineserver.py). Without it, Mission Planner can stop at every start.
+python3 "$HERE/patch-wineserver.py" "$APP/Contents/Resources/wine/bin/wineserver"
+if command -v codesign >/dev/null; then
+    codesign --force --sign - "$APP/Contents/Resources/wine/bin/wineserver"
+    codesign --verify "$APP/Contents/Resources/wine/bin/wineserver"
+fi
 
 echo "== Mission Planner"
 mkdir -p "$APP/Contents/Resources/MissionPlanner"
